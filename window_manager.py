@@ -1,5 +1,6 @@
 """Local profile lifecycle. Never persist tokens in the publisher database."""
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import time
 import threading
@@ -9,6 +10,7 @@ import store
 
 operation_lock = threading.Lock()
 job = {'running': False, 'results': []}
+DETECTION_WORKERS = 3
 
 def init():
     with store.connect() as db:
@@ -263,15 +265,36 @@ def start(body):
             raise ValueError('窗口操作正在执行，请稍候。')
         try:
             args=prepare(body)
-            job.update(running=True,results=[])
+            action, ids, *_ = args
+            workers = min(DETECTION_WORKERS, len(ids)) if action == 'detect' else 1
+            job.update(running=True, results=[], action=action, total=len(ids), workers=workers)
             threading.Thread(target=perform,args=args,daemon=True).start()
         except Exception:
             operation_lock.release()
             raise
 
+def detect_windows(ids, tokens):
+    with ThreadPoolExecutor(max_workers=min(DETECTION_WORKERS, len(ids))) as pool:
+        pending = {
+            pool.submit(inspect_window, pid, tokens[index] if tokens else ''): pid
+            for index, pid in enumerate(ids)
+        }
+        for future in as_completed(pending):
+            pid = pending[future]
+            try:
+                future.result()
+                message = state(pid)['reason']
+            except Exception:
+                message = '检测失败，请检查比特浏览器或重试。'
+            job['results'].append({'id': pid, 'name': pid, 'message': message})
+
+
 def perform(action,ids,names,patches,tokens,remark):
     from worker import bit
     try:
+        if action == 'detect':
+            detect_windows(ids, tokens)
+            return
         for index in range(len(names) if action=='create' else len(ids)):
             pid=None if action=='create' else ids[index]
             try:

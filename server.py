@@ -13,7 +13,7 @@ import batch
 import window_manager as wm
 from worker import profiles, publisher
 
-VERSION = '2026-11-09-batch-file-picker'
+VERSION = '2026-11-09-parallel-detection'
 PORT = 8766
 TOKEN = secrets.token_urlsafe(32)
 PICKER_LOCK = Lock()

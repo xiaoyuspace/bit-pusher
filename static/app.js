@@ -141,7 +141,16 @@ function renderWindowJob(){
  for(const id of ['windowConfigure','windowDetect'])$(id).disabled=busy||!targets.length;
  $('windowDelete').disabled=busy||!targets.length||targets.some(w=>w.state!=='delete');
  document.querySelectorAll('.row-action').forEach(b=>b.disabled=busy);
- $('windowProgress').textContent=job.running?'正在逐个处理窗口…':model.running?'发布队列运行中，完成后可管理窗口。':'暂无进行中的窗口操作';
+ let progress = '暂无进行中的窗口操作';
+ if (model.running) progress = '发布队列运行中，完成后可管理窗口。';
+ if (job.running) {
+  progress = job.action === 'detect'
+   ? `正在检测窗口 · 已完成 ${job.results.length}/${job.total} · 最多 ${job.workers} 个并行`
+   : '正在处理窗口…';
+ } else if (job.action === 'detect' && job.total) {
+  progress = `检测已结束 · 已完成 ${job.results.length}/${job.total}`;
+ }
+ $('windowProgress').textContent = progress;
  $('windowResults').replaceChildren(...job.results.map(r=>el('p',(windows.find(w=>w.id===r.id)?.name||r.name||r.id||'窗口')+'：'+r.message)));
  if(wasWindowRunning&&!job.running){wasWindowRunning=false;loadProfiles()}else wasWindowRunning=job.running;
 }
