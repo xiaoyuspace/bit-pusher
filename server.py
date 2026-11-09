@@ -1,3 +1,4 @@
+import errno
 import json
 import secrets
 import socket
@@ -147,7 +148,13 @@ if __name__ == '__main__':
     if len(sys.argv) == 3 and sys.argv[1] == '--pick-batch-path':
         print(json.dumps(show_batch_picker(sys.argv[2]), ensure_ascii=False))
         raise SystemExit(0)
-    server = LocalServer(('127.0.0.1',PORT),Handler)
+    try:
+        server = LocalServer(('127.0.0.1', PORT), Handler)
+    except OSError as error:
+        if error.errno != errno.EADDRINUSE and getattr(error, 'winerror', None) != 10048:
+            raise
+        print(f'端口 {PORT} 已被占用。若比特发布台已在运行，请直接打开 http://127.0.0.1:{PORT}。', file=sys.stderr)
+        raise SystemExit(1) from None
     store.init()
     print(f'Bit Publisher: http://127.0.0.1:{PORT}',flush=True)
     try:
