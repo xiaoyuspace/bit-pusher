@@ -13,7 +13,7 @@ import batch
 import window_manager as wm
 from worker import profiles, publisher
 
-VERSION = '2026-11-09-parallel-detection'
+VERSION = '2026-11-09-publish-activity'
 PORT = 8766
 TOKEN = secrets.token_urlsafe(32)
 PICKER_LOCK = Lock()
@@ -74,7 +74,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.send({'error':'Host rejected'},403)
         path = urlparse(self.path).path
         if path == '/api/state':
-            return self.send({'version':VERSION,'pid':os.getpid(),'token':TOKEN,'tasks':store.tasks(),'running':bool(publisher.thread and publisher.thread.is_alive()),'current':publisher.current,'window_job':wm.job})
+            with publisher.lock:
+                running = bool(publisher.thread and publisher.thread.is_alive())
+                current = publisher.current
+                activity = publisher.activity
+                closing_tasks = publisher.closing_task_ids()
+            return self.send({'version':VERSION,'pid':os.getpid(),'token':TOKEN,'tasks':store.tasks(),
+                              'running':running,'current':current,'activity':activity,
+                              'closing_tasks':closing_tasks,'window_job':wm.job})
         if path == '/api/profiles':
             try:
                 return self.send({'profiles':wm.listing()})
@@ -119,7 +126,10 @@ class Handler(BaseHTTPRequestHandler):
                 publisher.run(body.get('ids'))
             elif self.path == '/api/tasks/delete':
                 with publisher.lock:
-                    deleted = store.delete_tasks(body.get('ids'), current=publisher.current)
+                    ids = body.get('ids')
+                    if isinstance(ids, list) and any(tid in publisher.closing_task_ids() for tid in ids):
+                        raise ValueError('所选任务仍在等待关窗，请稍后再删除。')
+                    deleted = store.delete_tasks(ids, current=publisher.current)
                 return self.send({'deleted':deleted})
             elif self.path == '/api/stop':
                 publisher.stop()

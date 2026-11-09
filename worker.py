@@ -304,6 +304,35 @@ class Publisher:
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
         self.current = None
+        self.activity = None
+        self.closing = {}
+
+    def closing_task_ids(self):
+        # Call while holding self.lock.
+        return [tid for tid, timer in self.closing.values() if timer.is_alive()]
+
+    def schedule_close(self, profile_id, tid, message, url):
+        def close_window():
+            try:
+                bit('/browser/close', {'id': profile_id})
+                close_message = ' 比特窗口已关闭。'
+            except Exception:
+                close_message = ' 比特窗口未能自动关闭，请手动关闭。'
+            store.update(tid, 'success', message + close_message, url)
+
+        timer = threading.Timer(10, close_window)
+        timer.daemon = True
+        with self.lock:
+            self.closing[profile_id] = (tid, timer)
+            timer.start()
+
+    def wait_for_previous_close(self, profile_id):
+        previous = self.closing.get(profile_id)
+        if previous:
+            timer = previous[1]
+            while timer.is_alive():
+                self.checkpoint()
+                timer.join(timeout=0.25)
 
     def run(self, ids):
         with self.lock:
@@ -335,12 +364,18 @@ class Publisher:
                 self.current = task['id']
                 self.execute(task)
                 self.current = None
-                if self.stop_event.wait(3):
-                    break
+                self.activity = None
+                with self.lock:
+                    self.closing = {pid: item for pid, item in self.closing.items() if item[1].is_alive()}
         finally:
             self.current = None
+            self.activity = None
+            # Keep window management blocked until all scheduled closes finish.
+            for _, timer in self.closing.values():
+                timer.join()
             # Close the race where tasks are queued as a worker is exiting.
             with self.lock:
+                self.closing.clear()
                 self.thread = None
                 if not self.stop_event.is_set() and any(t['state']=='queued' for t in store.tasks()):
                     self.thread = threading.Thread(target=self.loop, daemon=True)
@@ -350,9 +385,20 @@ class Publisher:
         tid = task['id']
         submitted = False
         page = None
-        stage = '检查视频文件'
+        stage = None
+        published_url = None
+
+        def set_stage(label):
+            nonlocal stage
+            if label != stage:
+                stage = label
+                self.activity = {'id': tid, 'label': label, 'since': time.time()}
+
+        set_stage('等待同一窗口完成关窗')
         try:
+            self.wait_for_previous_close(task['profile_id'])
             self.checkpoint()
+            set_stage('检查视频文件')
             import window_manager as wm
             wm.require_ready([task['profile_id']])
             path, digest = store.file_hash(task['video'])
@@ -360,7 +406,7 @@ class Publisher:
                 raise ValueError('视频文件在创建任务后发生变化，请重新创建任务。')
             from playwright.sync_api import sync_playwright
             with sync_playwright() as p:
-                stage = '打开比特浏览器窗口'
+                set_stage('打开比特浏览器窗口')
                 opened = bit('/browser/open', {'id':task['profile_id']})
                 endpoint = opened.get('ws')
                 if not endpoint:
@@ -368,22 +414,22 @@ class Publisher:
                 parsed = urlparse(endpoint)
                 if parsed.hostname not in ('127.0.0.1','localhost','::1') or parsed.scheme not in ('http','ws'):
                     raise RuntimeError('比特浏览器未返回有效的本机调试地址。')
-                stage = '连接浏览器调试接口'
+                set_stage('连接浏览器调试接口')
                 browser = p.chromium.connect_over_cdp(endpoint, timeout=30000, is_local=True)
                 if not browser.contexts:
                     raise RuntimeError('浏览器没有可用上下文。')
-                stage = '创建发帖标签页'
+                set_stage('创建发帖标签页')
                 page = browser.contexts[0].new_page()
                 page.set_default_timeout(20000)
                 self.checkpoint()
-                stage = '加载发帖页面'
+                set_stage('加载发帖页面')
                 try:
                     page.goto('https://x.com/compose/post', wait_until='domcontentloaded', timeout=60000)
                 except Exception:
                     check_access(page)
                     # X can interrupt navigation with a client-side redirect.
                     # The loop below waits for the composer and checks access again.
-                stage = '定位发帖框'
+                set_stage('定位发帖框')
                 composer = page.locator('[role="dialog"][aria-modal="true"]').filter(has=page.get_by_test_id('tweetTextarea_0'))
                 editor = composer.get_by_test_id('tweetTextarea_0')
                 deadline = time.monotonic() + 30
@@ -398,10 +444,10 @@ class Publisher:
                     raise TimeoutError('未找到可用的发帖框。')
                 if editor.inner_text().strip():
                     raise ValueError('发帖框已有草稿内容，请先在窗口中处理该草稿。')
-                stage = '填写文案'
+                set_stage('填写文案')
                 editor.fill(task['text'])
                 self.checkpoint()
-                stage = '定位视频上传入口'
+                set_stage('定位视频上传入口')
                 upload = composer.locator('input[type="file"][accept*="video"]')
                 if upload.count() != 1:
                     raise ValueError('未找到唯一的视频上传入口，请检查页面。')
@@ -410,10 +456,10 @@ class Publisher:
                     page.close()
                     store.update(tid,'draft','准备检查通过：窗口、发帖框和上传入口正常，未上传或发布。')
                     return
-                stage = '上传视频文件'
+                set_stage('上传视频文件')
                 store.update(tid,'uploading','窗口已打开，正在上传视频，最多等待 20 分钟。')
                 upload.set_input_files(path, timeout=120000)
-                stage = '等待视频上传与处理'
+                set_stage('等待 X 完成上传')
                 button = composer.get_by_test_id('tweetButton')
                 deadline = time.monotonic() + 1200
                 ready_since = None
@@ -441,6 +487,12 @@ class Publisher:
                     processing = composer.get_by_text(re.compile(r'^(Uploading|Processing|正在上传|正在处理|处理中|上传中)(?:[ .…0-9%]*)$', re.I)).count() > 0
                     ready = preview and uploaded and not processing and button.count()==1 and button.is_enabled()
                     if ready:
+                        set_stage('确认视频就绪')
+                    elif processing or uploaded:
+                        set_stage('等待 X 处理附件')
+                    else:
+                        set_stage('等待 X 完成上传')
+                    if ready:
                         ready_since = ready_since or time.monotonic()
                         if time.monotonic() - ready_since >= 5:
                             break
@@ -465,7 +517,7 @@ class Publisher:
                     except Exception:
                         pass
                 page.on('response', on_response)
-                stage = '处理发布前弹窗'
+                set_stage('处理发布前弹窗')
                 for _ in range(6):
                     self.checkpoint()
                     if not handle_known_prompts(page):
@@ -481,7 +533,7 @@ class Publisher:
                 self.checkpoint()
                 store.update(tid,'submitting','视频就绪，正在提交。结果不明确时不会自动重发。')
                 submitted = True  # Durable marker precedes click; crashes cannot trigger a duplicate retry.
-                stage = '点击发布并等待结果'
+                set_stage('点击发布并等待结果')
                 button.press('Enter', timeout=15000)
                 end = time.monotonic() + 90
                 while not result['url'] and not result['rejected'] and time.monotonic() < end:
@@ -493,7 +545,8 @@ class Publisher:
                     wm.mark(task['profile_id'],'delete',result['rejected'])
                     store.update(tid,'failed',result['rejected'])
                 elif result['url']:
-                    url = result['url']
+                    url = published_url = result['url']
+                    set_stage('为原帖点赞')
                     store.update(tid, 'success', '已发布，正在为原帖点赞。', url)
                     try:
                         like_published_post(page, url)
@@ -501,13 +554,7 @@ class Publisher:
                     except Exception:
                         message = '已发布，未能确认点赞结果。'
                     store.update(tid, 'success', message + ' 等待 10 秒后关闭窗口。', url)
-                    time.sleep(10)
-                    try:
-                        bit('/browser/close', {'id': task['profile_id']})
-                        message += ' 比特窗口已关闭。'
-                    except Exception:
-                        message += ' 比特窗口未能自动关闭，请手动关闭。'
-                    store.update(tid, 'success', message, url)
+                    self.schedule_close(task['profile_id'], tid, message, url)
                 else:
                     store.update(tid,'unknown','已尝试提交但未取得可核验的帖子链接。请检查时间线，勿直接重复发布。')
                 # Failed or unconfirmed attempts leave the window available for review.
@@ -521,6 +568,9 @@ class Publisher:
         except InterruptedError as e:
             store.update(tid,'unknown' if submitted else 'cancelled',str(e))
         except Exception as e:
+            if published_url:
+                store.update(tid, 'success', '已发布。收尾操作出现异常，请检查比特窗口。', published_url)
+                return
             detail = str(e).replace(task.get('text',''), '[任务文案]') if task.get('text') else str(e)
             detail = detail.split('Call log:')[0].strip()
             message = f'{stage}失败（{type(e).__name__}）：{detail}'
