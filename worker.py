@@ -181,16 +181,26 @@ def dismiss_optional_prompt(dialog):
 
 
 def handle_known_prompts(page):
+    from playwright.sync_api import TimeoutError as PlaywrightTimeout
+
     # User confirmed all bound numbers remain in use and authorized this exact action.
     title = page.get_by_text('Review your phone', exact=True)
     if title.count() and title.first.is_visible():
         yes = page.get_by_role('button', name='Yes, that is my number', exact=True)
         if yes.count() != 1 or not yes.is_visible():
             raise AutoPublishBlocked('手机号确认弹窗结构发生变化，无法安全自动确认。')
-        yes.click(timeout=10000)
+        try:
+            yes.click(timeout=1500)
+        except PlaywrightTimeout:
+            # X sometimes leaves a transparent layer over the confirmation button.
+            if not yes.is_enabled():
+                raise AutoPublishBlocked('手机号确认按钮暂不可用。') from None
+            yes.focus(timeout=3000)
+            if not yes.evaluate('(button) => button === document.activeElement'):
+                raise AutoPublishBlocked('手机号确认按钮未获得键盘焦点。') from None
+            yes.press('Enter', timeout=3000)
         title.first.wait_for(state='hidden', timeout=15000)
         return True
-    from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
     inaccessible_prompt = None
     for title_text, button_text in CONFIRMATION_PROMPTS:

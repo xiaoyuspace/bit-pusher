@@ -14,7 +14,7 @@ import window_manager as wm
 import window_sync
 from worker import profiles, publisher
 
-VERSION = '2026-11-10-window-state-sync'
+VERSION = '2026-11-10-phone-confirm'
 PORT = 8766
 TOKEN = secrets.token_urlsafe(32)
 PICKER_LOCK = Lock()
