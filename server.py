@@ -5,15 +5,16 @@ import socket
 import os
 import subprocess
 import sys
-from threading import Lock
+from threading import Lock, Thread
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 import store
 import batch
 import window_manager as wm
+import window_sync
 from worker import profiles, publisher
 
-VERSION = '2026-11-09-publish-activity'
+VERSION = '2026-11-10-window-state-sync'
 PORT = 8766
 TOKEN = secrets.token_urlsafe(32)
 PICKER_LOCK = Lock()
@@ -81,7 +82,8 @@ class Handler(BaseHTTPRequestHandler):
                 closing_tasks = publisher.closing_task_ids()
             return self.send({'version':VERSION,'pid':os.getpid(),'token':TOKEN,'tasks':store.tasks(),
                               'running':running,'current':current,'activity':activity,
-                              'closing_tasks':closing_tasks,'window_job':wm.job})
+                              'closing_tasks':closing_tasks,'window_job':wm.job,
+                              'window_sync':window_sync.status,'window_sync_revision':window_sync.revision})
         if path == '/api/profiles':
             try:
                 return self.send({'profiles':wm.listing()})
@@ -166,6 +168,7 @@ if __name__ == '__main__':
         print(f'端口 {PORT} 已被占用。若比特发布台已在运行，请直接打开 http://127.0.0.1:{PORT}。', file=sys.stderr)
         raise SystemExit(1) from None
     store.init()
+    Thread(target=window_sync.run, daemon=True).start()
     print(f'Bit Publisher: http://127.0.0.1:{PORT}',flush=True)
     try:
         server.serve_forever()
