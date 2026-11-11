@@ -153,6 +153,8 @@ def inspect_window(pid, token=''):
             context=browser.contexts[0]
             page=context.new_page()
             try:
+                # The composer mask intercepts Cookie banner clicks on fresh profiles.
+                check_own_post(page)
                 try:
                     page.goto('https://x.com/compose/post',wait_until='domcontentloaded',timeout=60000)
                 except Exception:
@@ -166,7 +168,6 @@ def inspect_window(pid, token=''):
                     handle_known_prompts(page)
                     editor=page.get_by_test_id('tweetTextarea_0')
                     if editor.count() and editor.first.is_visible():
-                        check_own_post(page)
                         break
                     page.wait_for_timeout(750)
                 else:
