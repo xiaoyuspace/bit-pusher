@@ -132,13 +132,14 @@ function renderWindows(){
    el('td',w.proxy_password||'—'),el('td',w.remark||'—','remark-cell'));
   const status=el('td');status.append(el('span',windowLabels[w.state],'badge '+w.state));tr.append(status);
   tr.append(el('td',w.checked?new Date(w.checked*1000).toLocaleString('zh-CN',{hour12:false}):'尚未检测','date-cell'),el('td',w.reason||'—','message'));
+  tr.append(el('td',w.username||'—'),el('td',w.account_password||'—'),el('td',w.twofa||'—'));
   const actions=el('td');for(const [text,mode] of [['配置','configure'],['编辑','edit'],['检测','detect']]){const button=el('button',text,'text-button row-action');button.disabled=!!(model?.running||model?.window_job?.running);button.onclick=()=>{chosenWindows=new Set([w.id]);renderWindows();mode==='detect'?windowAction(mode):openWindowForm(mode)};actions.append(button)}
   const manualCheck=el('button','手动检测','text-button row-action');
   manualCheck.onclick=()=>openManualCheck(w);
   actions.append(manualCheck);
   tr.append(actions);$('windowList').append(tr);
  }
- if(!rows.length){const tr=el('tr'),td=el('td','没有匹配的窗口，请调整筛选条件。','empty-cell');td.colSpan=10;tr.append(td);$('windowList').append(tr)}
+ if(!rows.length){const tr=el('tr'),td=el('td','没有匹配的窗口，请调整筛选条件。','empty-cell');td.colSpan=13;tr.append(td);$('windowList').append(tr)}
  const visible=currentWindows();$('windowsAll').checked=visible.length>0&&visible.every(w=>chosenWindows.has(w.id));$('windowsAll').indeterminate=visible.some(w=>chosenWindows.has(w.id))&&!$('windowsAll').checked;
  renderWindowJob();
 }
@@ -183,6 +184,27 @@ $('copyDeletedProxies').onclick=async()=>{
  }
 };
 function clearWindowForm(){$('windowTokens').value='';$('windowProxies').value=''}
+$('openLoginExtractor').onclick=()=>$('loginExtractor').showModal();
+$('loginCardFile').onchange=async()=>{
+ const file=$('loginCardFile').files[0];
+ if(file) $('loginCardText').value=await file.text();
+};
+$('extractLogins').onclick=async()=>{
+ const button=$('extractLogins');
+ button.disabled=true;
+ try{
+  const {logins}=await api('/api/windows/extract-logins',{text:$('loginCardText').value});
+  if(!$('loginExtractor').open)return;
+  $('windowTokens').value=logins;
+  $('loginExtractor').close();
+ }catch(e){$('loginExtractStatus').textContent=e.message}
+ finally{button.disabled=false}
+};
+$('loginExtractor').addEventListener('close',()=>{
+ $('loginCardText').value='';
+ $('loginCardFile').value='';
+ $('loginExtractStatus').textContent='';
+});
 function closeWindowForm(){$('windowsDialog').close();clearWindowForm()}
 function openWindowForm(mode){
  if(mode!=='create'&&!chosenWindows.size)return toast('请先选择窗口');

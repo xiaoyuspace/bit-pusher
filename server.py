@@ -103,6 +103,8 @@ class Handler(BaseHTTPRequestHandler):
             if not 0 <= size <= 200000:
                 raise ValueError('请求过大。')
             body = json.loads(self.rfile.read(size) or b'{}')
+            if self.path == '/api/windows/extract-logins':
+                return self.send({'logins': wm.extract_logins(str(body.get('text', '')))})
             if self.path == '/api/windows/manual-check':
                 wm.manual_check(body)
                 return self.send({'ok':True})

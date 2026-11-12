@@ -17,6 +17,46 @@ def init():
         db.execute("CREATE TABLE IF NOT EXISTS windows(id TEXT PRIMARY KEY,state TEXT NOT NULL,reason TEXT,checked REAL)")
 
         db.execute("CREATE TABLE IF NOT EXISTS window_proxies(id TEXT PRIMARY KEY,line TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS window_accounts(id TEXT PRIMARY KEY, username TEXT, password TEXT, twofa TEXT)")
+
+
+def save_account(pid, account):
+    if account:
+        with store.connect() as db:
+            db.execute('INSERT OR REPLACE INTO window_accounts VALUES (?,?,?,?)', (pid, *account))
+
+
+TOKEN_PATTERN = r'[a-zA-Z0-9_-]{20,512}'
+ACCOUNT_PATTERN = re.compile(r'([A-Za-z0-9_]{1,15})-(.+)-([A-Za-z2-7]{16,64})-(' + TOKEN_PATTERN + r')')
+
+
+def parse_login(line):
+    match = ACCOUNT_PATTERN.fullmatch(line)
+    if match:
+        return match.groups()[:3], match[4]
+    if re.fullmatch(TOKEN_PATTERN, line):
+        return None, line
+    raise ValueError('登录信息格式应为 账号-密码-2FA-token。')
+
+
+def extract_logins(text):
+    results = []
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        fields = re.split(r'——|----', line.strip(), maxsplit=3)
+        tail = re.split(r'——|----', fields[-1])
+        if len(fields) == 4 and len(tail) in (2, 3):
+            username, password = fields[:2]
+            twofa, token = tail[-2:]
+            compact = '-'.join((username, password, twofa, token))
+            if ACCOUNT_PATTERN.fullmatch(compact):
+                results.append(compact)
+                continue
+        raise ValueError(f'第 {number} 行卡密格式不正确。')
+    if not results:
+        raise ValueError('请先粘贴或选择卡密 TXT。')
+    return '\n'.join(results)
 
 
 def save_proxy(pid, line):
@@ -40,13 +80,15 @@ def listing():
     init()
     with store.connect() as db:
         saved = dict(db.execute('SELECT id,line FROM window_proxies'))
+        accounts = {row['id']: dict(row) for row in db.execute(
+            'SELECT id, username, password AS account_password, twofa FROM window_accounts')}
     windows = []
     for profile in profiles():
         line = saved.get(profile['id'])
         if line:
             host, _, username, password, _ = line.split('|')
             profile.update(proxy_ip=host, proxy_user=username, proxy_password=password)
-        windows.append({**profile, **state(profile['id'])})
+        windows.append({**profile, **accounts.get(profile['id'], {}), **state(profile['id'])})
     return windows
 
 def require_ready(ids):
@@ -240,8 +282,7 @@ def prepare(body):
         if values and len(values)!=n:
             raise ValueError('代理和 token 须各按行与窗口数量一致；不修改的整项可留空。')
     patches=[(s, proxy(s)) for s in proxies]
-    if any(not re.fullmatch(r'[a-zA-Z0-9_-]{20,512}',s) for s in tokens):
-        raise ValueError('token 格式不正确，请每行粘贴一个完整 token。')
+    tokens = [parse_login(line) for line in tokens]
     if action=='delete' and any(state(i)['state']!='delete' for i in ids):
         raise ValueError('只能删除待删除状态的窗口。')
     if action=='delete' and body.get('confirm') is not True:
@@ -302,7 +343,7 @@ def start(body):
 def detect_windows(ids, tokens):
     with ThreadPoolExecutor(max_workers=min(DETECTION_WORKERS, len(ids))) as pool:
         pending = {
-            pool.submit(inspect_window, pid, tokens[index] if tokens else ''): pid
+            pool.submit(inspect_window, pid, tokens[index][1] if tokens else ''): pid
             for index, pid in enumerate(ids)
         }
         for future in as_completed(pending):
@@ -323,6 +364,7 @@ def perform(action,ids,names,patches,tokens,remark):
             return
         for index in range(len(names) if action=='create' else len(ids)):
             pid=None if action=='create' else ids[index]
+            account, token = tokens[index] if tokens else (None, '')
             try:
                 if action=='create':
                     result=bit('/browser/update',dict(name=names[index],platform='https://x.com',platformIcon='x.com',url='https://x.com/home',remark=remark,browserFingerPrint={},**(patches[index][1] if patches else {})))
@@ -330,8 +372,9 @@ def perform(action,ids,names,patches,tokens,remark):
                     mark(pid, 'ready', '窗口已创建，默认可使用。')
                     if patches:
                         save_proxy(pid, patches[index][0])
-                    if tokens:
-                        save_token(pid, tokens[index], bit('/browser/detail', {'id': pid}))
+                    if token:
+                        save_token(pid, token, bit('/browser/detail', {'id': pid}))
+                        save_account(pid, account)
                 elif action=='delete':
                     with store.connect() as db:
                         saved = db.execute('SELECT line FROM window_proxies WHERE id=?', (pid,)).fetchone()
@@ -350,6 +393,7 @@ def perform(action,ids,names,patches,tokens,remark):
                         job['deleted_proxies'].append(line)
                     with store.connect() as db:
                         db.execute('DELETE FROM window_proxies WHERE id=?', (pid,))
+                        db.execute('DELETE FROM window_accounts WHERE id=?', (pid,))
                         db.execute('DELETE FROM windows WHERE id=?',(pid,))
                 elif action in ('configure','edit'):
                     if patches or tokens:
@@ -366,7 +410,8 @@ def perform(action,ids,names,patches,tokens,remark):
                     if patches:
                         save_proxy(pid, patches[index][0])
                     if action == 'configure' or patches:
-                        inspect_window(pid, tokens[index] if tokens else '')
+                        inspect_window(pid, token)
+                        save_account(pid, account)
                 current=state(pid) if action!='delete' else {'reason':'已删除'}
                 job['results'].append({'id':pid,'name':names[index] if action=='create' else pid,'message':current['reason']})
             except Exception:
