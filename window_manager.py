@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 import store
 
 operation_lock = threading.Lock()
+managed_profiles = None
 job = {'running': False, 'results': []}
 DETECTION_WORKERS = 3
 
@@ -344,7 +345,21 @@ def prepare(body):
         raise ValueError('请确认删除选中的窗口。')
     return action,ids,names,patches,tokens,str(body.get('remark',''))[:2000]
 
+def require_unmanaged(ids):
+    # A lock without a profile set belongs to a create or credential import.
+    reserved = managed_profiles
+    if operation_lock.locked() and (reserved is None or reserved.intersection(ids)):
+        raise ValueError('所选窗口正在管理，请稍后再发布。')
+
+
+def release_management():
+    global managed_profiles
+    managed_profiles = None
+    operation_lock.release()
+
+
 def manual_check(body):
+    global managed_profiles
     from worker import bit, publisher
 
     pid = body.get('id')
@@ -355,10 +370,11 @@ def manual_check(body):
         raise ValueError('无效的手动检测操作。')
 
     with publisher.lock:
-        if publisher.thread and publisher.thread.is_alive():
-            raise ValueError('发布队列正在执行，请完成或停止后再操作。')
+        if pid in publisher.reserved_profiles():
+            raise ValueError('该窗口已被发布队列占用。')
         if not operation_lock.acquire(blocking=False):
             raise ValueError('窗口操作正在执行，请稍候。')
+        managed_profiles = {pid}
     try:
         if action == 'open':
             bit('/browser/open', {'id': pid})
@@ -373,26 +389,28 @@ def manual_check(body):
             raise ValueError('窗口不存在，请刷新列表。')
         mark(pid, status, f'人工检测：已手动标为「{labels[status]}」。')
     finally:
-        operation_lock.release()
+        release_management()
 
 
 def start(body):
+    global managed_profiles
     from worker import publisher
-    # Shared gate prevents posting and window operations from racing.
+
+    args = prepare(body)
+    action, ids, *_ = args
     with publisher.lock:
-        if publisher.thread and publisher.thread.is_alive():
-            raise ValueError('发布队列正在执行，请完成或停止后再管理窗口。')
+        if action != 'create' and publisher.reserved_profiles().intersection(ids):
+            raise ValueError('所选窗口中有窗口已被发布队列占用，请取消勾选后重试。')
         if not operation_lock.acquire(blocking=False):
             raise ValueError('窗口操作正在执行，请稍候。')
         try:
-            args=prepare(body)
-            action, ids, *_ = args
+            managed_profiles = None if action == 'create' else set(ids)
             workers = min(DETECTION_WORKERS, len(ids)) if action == 'detect' else 1
             job.update(running=True, results=[], action=action, total=len(ids), workers=workers,
                        run_id=str(time.time_ns()), deleted_proxies=[])
             threading.Thread(target=perform,args=args,daemon=True).start()
         except Exception:
-            operation_lock.release()
+            release_management()
             raise
 
 def detect_windows(ids, tokens):
@@ -476,4 +494,4 @@ def perform(action,ids,names,patches,tokens,remark):
         tokens.clear()
         patches.clear()
         job['running']=False
-        operation_lock.release()
+        release_management()

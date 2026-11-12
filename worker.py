@@ -349,20 +349,28 @@ class Publisher:
                 self.checkpoint()
                 timer.join(timeout=0.25)
 
+    def reserved_profiles(self):
+        # Caller holds self.lock. Protect queued work, the current task and delayed closes.
+        with store.connect() as db:
+            reserved = {row[0] for row in db.execute(
+                "SELECT profile_id FROM tasks WHERE id=? OR state IN ('queued','preparing','uploading','submitting')",
+                (self.current,),
+            )}
+        return reserved | {pid for pid, (_, timer) in self.closing.items() if timer.is_alive()}
+
     def run(self, ids):
         with self.lock:
             import window_manager as wm
-            if wm.operation_lock.locked():
-                raise ValueError('窗口管理正在执行，请稍候。')
-            wm.require_ready([store.get(i)['profile_id'] for i in (ids or [])])
+            profile_ids = [store.get(i)['profile_id'] for i in (ids or [])]
+            wm.require_unmanaged(profile_ids)
+            wm.require_ready(profile_ids)
             store.enqueue(ids)
             self.start_worker()
 
     def reassign_failed(self, task_id, profile_id):
         import window_manager as wm
         with self.lock:
-            if wm.operation_lock.locked():
-                raise ValueError('窗口管理正在执行，请稍候。')
+            wm.require_unmanaged([profile_id])
             if task_id == self.current:
                 raise ValueError('任务仍在收尾，请稍后再试。')
             wm.require_ready([profile_id])

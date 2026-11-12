@@ -161,7 +161,7 @@ function renderWindows(){
   const status=el('td');status.append(el('span',windowLabels[w.state],'badge '+w.state));tr.append(status);
   tr.append(el('td',w.checked?new Date(w.checked*1000).toLocaleString('zh-CN',{hour12:false}):'尚未检测','date-cell'),el('td',w.reason||'—','message'));
   tr.append(el('td',w.username||'—'),el('td',w.account_password||'—'),el('td',w.twofa||'—'));
-  const actions=el('td');for(const [text,mode] of [['配置','configure'],['编辑','edit'],['检测','detect']]){const button=el('button',text,'text-button row-action');button.disabled=!!(model?.running||model?.window_job?.running);button.onclick=()=>{chosenWindows=new Set([w.id]);renderWindows();mode==='detect'?windowAction(mode):openWindowForm(mode)};actions.append(button)}
+  const actions=el('td');actions.dataset.profileId=w.id;for(const [text,mode] of [['配置','configure'],['编辑','edit'],['检测','detect']]){const button=el('button',text,'text-button row-action');button.onclick=()=>{chosenWindows=new Set([w.id]);renderWindows();mode==='detect'?windowAction(mode):openWindowForm(mode)};actions.append(button)}
   const manualCheck=el('button','手动检测','text-button row-action');
   manualCheck.onclick=()=>openManualCheck(w);
   actions.append(manualCheck);
@@ -174,14 +174,24 @@ function renderWindows(){
 let shownDeletedProxies;
 function renderWindowJob(){
  const job=model?.window_job;if(!job)return;
- const busy=job.running||model.running,targets=windows.filter(w=>chosenWindows.has(w.id));
+ const supportsParallelWindows = Array.isArray(model.reserved_profiles);
+ const busy=job.running||(model.running&&!supportsParallelWindows),targets=windows.filter(w=>chosenWindows.has(w.id));
+ const reserved = new Set(model.reserved_profiles || []);
+ const selectedBusy = targets.some(w => reserved.has(w.id));
  $('windowSelection').textContent=`已选 ${targets.length} 项`;
- $('windowCreate').disabled=busy;$('windowSubmit').disabled=busy;
- for(const id of ['windowConfigure','windowDetect'])$(id).disabled=busy||!targets.length;
- $('windowDelete').disabled=busy||!targets.length||targets.some(w=>w.state!=='delete');
- document.querySelectorAll('.row-action').forEach(b=>b.disabled=busy);
+ $('windowCreate').disabled=busy;$('windowSubmit').disabled=busy||(windowMode!=='create'&&selectedBusy);
+ for(const id of ['windowConfigure','windowDetect'])$(id).disabled=busy||selectedBusy||!targets.length;
+ $('windowDelete').disabled=busy||selectedBusy||!targets.length||targets.some(w=>w.state!=='delete');
+ document.querySelectorAll('.row-action').forEach(button => {
+  const reservedWindow = reserved.has(button.closest('[data-profile-id]')?.dataset.profileId);
+  button.disabled = busy || reservedWindow;
+  button.title = reservedWindow ? '该窗口已被发布队列占用' : '';
+ });
  let progress = '暂无进行中的窗口操作';
- if (model.running) progress = '发布队列运行中，完成后可管理窗口。';
+ if (model.running) progress = supportsParallelWindows
+  ? '发布队列运行中，可操作未被占用的窗口。'
+  : '发布队列运行中，重启新版发布台后可并行操作其他窗口。';
+ if (selectedBusy) progress = '所选窗口包含发布队列占用的窗口，请取消勾选后再操作。';
  if (job.running) {
   progress = job.action === 'detect'
    ? `正在检测窗口 · 已完成 ${job.results.length}/${job.total} · 最多 ${job.workers} 个并行`
