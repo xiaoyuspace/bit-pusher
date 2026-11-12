@@ -126,6 +126,9 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == '/api/task':
                 wm.require_ready([body.get('profile_id')])
                 return self.send({'id':store.create_task(body)})
+            if self.path == '/api/tasks/reassign':
+                publisher.reassign_failed(body.get('id'), body.get('profile_id'))
+                return self.send({'ok':True})
             if self.path == '/api/run':
                 publisher.run(body.get('ids'))
             elif self.path == '/api/tasks/delete':

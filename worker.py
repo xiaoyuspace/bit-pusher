@@ -356,10 +356,27 @@ class Publisher:
                 raise ValueError('窗口管理正在执行，请稍候。')
             wm.require_ready([store.get(i)['profile_id'] for i in (ids or [])])
             store.enqueue(ids)
-            self.stop_event.clear()
-            if not self.thread or not self.thread.is_alive():
-                self.thread = threading.Thread(target=self.loop, daemon=True)
-                self.thread.start()
+            self.start_worker()
+
+    def reassign_failed(self, task_id, profile_id):
+        import window_manager as wm
+        with self.lock:
+            if wm.operation_lock.locked():
+                raise ValueError('窗口管理正在执行，请稍候。')
+            if task_id == self.current:
+                raise ValueError('任务仍在收尾，请稍后再试。')
+            wm.require_ready([profile_id])
+            profile = next((item for item in profiles() if item['id'] == profile_id), None)
+            if not profile:
+                raise ValueError('目标窗口不存在，请刷新窗口列表。')
+            store.reassign_failed(task_id, profile_id, profile['name'] or str(profile['seq']))
+            self.start_worker()
+
+    def start_worker(self):
+        self.stop_event.clear()
+        if not self.thread or not self.thread.is_alive():
+            self.thread = threading.Thread(target=self.loop, daemon=True)
+            self.thread.start()
 
     def stop(self):
         with self.lock:

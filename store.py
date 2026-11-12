@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+import shutil
 import sqlite3
 import time
 import uuid
@@ -53,6 +54,54 @@ def file_hash(path):
     return str(path.resolve()), digest.hexdigest()
 
 
+def fingerprint(profile, text, digest):
+    return hashlib.sha256(json.dumps([profile, text, digest], ensure_ascii=False).encode()).hexdigest()
+
+
+def failed_archive(task_id):
+    if not re.fullmatch(r'[0-9a-f]{32}', task_id):
+        raise ValueError('失败任务编号无效。')
+    parent = DATA.resolve() / 'failed'
+    target = parent / task_id
+    if target.resolve() != target:
+        raise ValueError('失败归档路径无效。')
+    return target
+
+
+def archived_video(task):
+    try:
+        path = failed_archive(task['id']) / Path(task['video']).name
+        return path if path.resolve() == path and path.is_file() else None
+    except (ValueError, OSError):
+        return None
+
+
+def reassign_failed(task_id, profile_id, profile_name):
+    with connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        task = db.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone()
+        if not task or task['state'] not in ('failed', 'blocked') or task['url']:
+            raise ValueError('只可重新分配未发布的失败或受阻任务。')
+        archive = archived_video(task)
+        if not archive:
+            raise ValueError('失败归档中找不到视频。')
+        video, digest = file_hash(archive)
+        if digest != task['file_hash']:
+            raise ValueError('归档视频与原任务不一致。')
+        fp = fingerprint(profile_id, task['text'], digest)
+        if db.execute('SELECT 1 FROM published_fingerprints WHERE fingerprint=?', (fp,)).fetchone():
+            raise ValueError('目标窗口曾提交过相同文案和视频。')
+        now = time.time()
+        message = '已重新分配，等待使用失败归档发帖。'
+        try:
+            db.execute('''UPDATE tasks SET profile_id=?,profile_name=?,video=?,fingerprint=?,
+                          state='queued',message=?,updated=? WHERE id=?''',
+                       (profile_id, profile_name, video, fp, message, now, task_id))
+        except sqlite3.IntegrityError:
+            raise ValueError('目标窗口已有相同文案和视频的任务。') from None
+        db.execute('INSERT INTO logs(task_id,time,message) VALUES(?,?,?)', (task_id, now, message))
+
+
 def create_task(data, db=None):
     handle = ''  # Retained column for compatibility with existing task databases.
     text = str(data.get('text', '')).strip()
@@ -62,7 +111,7 @@ def create_task(data, db=None):
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', profile):
         raise ValueError('请选择浏览器窗口。')
     video, digest = file_hash(str(data.get('video', '')).strip().strip('"'))
-    fp = hashlib.sha256(json.dumps([profile, text, digest], ensure_ascii=False).encode()).hexdigest()
+    fp = fingerprint(profile, text, digest)
     task_id, now = uuid.uuid4().hex, time.time()
     with (connect() if db is None else nullcontext(db)) as db:
         try:
@@ -78,7 +127,12 @@ def create_task(data, db=None):
 
 def tasks():
     with connect() as db:
-        return [dict(r) for r in db.execute('SELECT * FROM tasks ORDER BY created DESC')]
+        rows = [dict(r) for r in db.execute('SELECT * FROM tasks ORDER BY created DESC')]
+    for task in rows:
+        task['can_reassign'] = (
+            task['state'] in ('failed', 'blocked') and not task['url'] and bool(archived_video(task))
+        )
+    return rows
 
 
 def get(task_id):
@@ -95,6 +149,16 @@ def update(task_id, state, message, url=''):
         db.execute('INSERT INTO logs(task_id,time,message) VALUES(?,?,?)', (task_id,time.time(),message))
     if state in ('failed', 'blocked'):
         archive_failed(task_id)
+    elif state == 'success':
+        task = get(task_id)
+        if task['url'] and Path(task['video']).parent == DATA.resolve() / 'failed' / task_id:
+            try:
+                target = failed_archive(task_id)
+                if target.is_dir():
+                    shutil.rmtree(target)
+            except (OSError, ValueError):
+                with connect() as db:
+                    db.execute("UPDATE tasks SET message=message || ' 失败归档清理未完成。' WHERE id=?", (task_id,))
 
 
 def enqueue(ids):
@@ -150,10 +214,9 @@ def resolve(task_id, url):
 
 
 def archive_failed(task_id):
-    import shutil
     task = get(task_id)
-    target = DATA / 'failed' / task_id
     try:
+        target = failed_archive(task_id)
         target.mkdir(parents=True, exist_ok=True)
         (target / '文案.txt').write_text(task['text'], encoding='utf-8-sig')
         (target / '失败原因.txt').write_text(task['profile_name'] + '\n' + task['message'], encoding='utf-8-sig')
