@@ -2,7 +2,7 @@
 
 #batchDialog{width:850px}.batch-picker{display:flex;align-items:flex-end;gap:8px;margin:15px 0}.batch-picker label{flex:1;min-width:0}#batchDialog .batch-picker label{margin:0}.batch-picker button{flex-shrink:0}#batchDialog label{display:block;margin:15px 0;color:#7e899b;font-size:12px}#batchDialog input:not([type=checkbox]){display:block;width:100%;padding:10px;border:1px solid #dfe4ed;border-radius:6px;margin-top:8px}#batchProfiles{display:grid;grid-template-columns:repeat(3,1fr);max-height:230px;overflow:auto;margin:12px 0}#batchProfiles label{margin:5px}#batchRows{max-height:300px;overflow:auto;margin:15px 0}#batchRows td{white-space:normal;font-size:11px}
 
-#windowsDialog{width:min(1050px,94vw);max-height:90vh;overflow:auto} #windowList{max-height:300px;overflow:auto;margin:15px 0} #windowList label{display:block;padding:8px;border-bottom:1px solid #ddd} #windowsDialog .actions{flex-wrap:wrap} #windowTokens{-webkit-text-security:disc}
+#windowsDialog{width:min(1050px,94vw);max-height:90vh;overflow:auto} #windowList{max-height:300px;overflow:auto;margin:15px 0} #windowList label{display:block;padding:8px;border-bottom:1px solid #ddd} #windowsDialog .actions{flex-wrap:wrap}
 
 /* Administrative workspace */
 :root{--bg:#f4f6fa;--ink:#25324b;--muted:#738198;--line:#e6ebf2;--blue:#3867e8}
