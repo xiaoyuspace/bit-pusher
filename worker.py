@@ -54,6 +54,8 @@ def profiles():
             seen.add(row['id'])
             result.append({**{k:row.get(k) for k in ('id','name','seq')},
                            'proxy_ip': (row.get('host') or '') if row.get('proxyType') != 'noproxy' else '',
+                           'proxy_user': (row.get('proxyUserName') or '') if row.get('proxyType') != 'noproxy' else '',
+                           'proxy_password': (row.get('proxyPassword') or '') if row.get('proxyType') != 'noproxy' else '',
                            'remark': row.get('remark') or ''})
         if not fresh or len(result) >= int(data.get('totalNum', len(result))):
             return result

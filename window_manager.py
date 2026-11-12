@@ -16,6 +16,14 @@ def init():
     with store.connect() as db:
         db.execute("CREATE TABLE IF NOT EXISTS windows(id TEXT PRIMARY KEY,state TEXT NOT NULL,reason TEXT,checked REAL)")
 
+        db.execute("CREATE TABLE IF NOT EXISTS window_proxies(id TEXT PRIMARY KEY,line TEXT NOT NULL)")
+
+
+def save_proxy(pid, line):
+    with store.connect() as db:
+        db.execute('INSERT OR REPLACE INTO window_proxies VALUES (?,?)', (pid, line))
+
+
 def state(pid):
     init()
     with store.connect() as db:
@@ -29,7 +37,17 @@ def mark(pid, status, reason):
 
 def listing():
     from worker import profiles
-    return [{**r,**state(r['id'])} for r in profiles()]
+    init()
+    with store.connect() as db:
+        saved = dict(db.execute('SELECT id,line FROM window_proxies'))
+    windows = []
+    for profile in profiles():
+        line = saved.get(profile['id'])
+        if line:
+            host, _, username, password, _ = line.split('|')
+            profile.update(proxy_ip=host, proxy_user=username, proxy_password=password)
+        windows.append({**profile, **state(profile['id'])})
+    return windows
 
 def require_ready(ids):
     if not ids or any(state(i)['state'] != 'ready' for i in ids):
@@ -38,11 +56,11 @@ def require_ready(ids):
 def proxy(value):
     parts = value.strip().split('|')
     if len(parts)!=5 or not parts[0].strip() or not parts[1].isdigit() or not 1<=int(parts[1])<=65535:
-        raise ValueError('代理格式应为 主机|端口|用户名|密码|到期时间。')
+        raise ValueError('代理格式应为 主机|端口|用户名|密码|创建时间。')
     try:
         datetime.strptime(parts[4], '%Y-%m-%d %H:%M:%S')
     except ValueError:
-        raise ValueError('代理到期时间格式应为 YYYY-MM-DD HH:MM:SS。') from None
+        raise ValueError('代理创建时间格式应为 YYYY-MM-DD HH:MM:SS。') from None
     return dict(proxyMethod=2,proxyType='socks5',host=parts[0].strip(),port=int(parts[1]),proxyUserName=parts[2],proxyPassword=parts[3])
 
 class PostCheckIncomplete(ValueError):
@@ -116,26 +134,32 @@ def check_own_post(page):
     raise PostCheckIncomplete('作品详情未正常加载，暂无法确认冻结状态，请重试检测。')
 
 
+def save_token(pid, token, detail):
+    from worker import bit
+
+    # Verify login after loading the saved profile, as on a later reopen.
+    cookies = detail.get('cookie') or []
+    if isinstance(cookies, str):
+        cookies = json.loads(cookies)
+    if not isinstance(cookies, list) or any(not isinstance(c, dict) for c in cookies):
+        raise ValueError('窗口 Cookie 格式异常，未修改。')
+    cookies = [c for c in cookies if not (
+        c.get('name') == 'auth_token' and str(c.get('domain', '')).lstrip('.').lower() == 'x.com'
+    )]
+    cookies.append(dict(name='auth_token',value=token,domain='.x.com',path='/',secure=True,httpOnly=True,expirationDate=time.time()+86400*365))
+    bit('/browser/update/partial', {
+        'ids': [pid],
+        'browserFingerPrint': {},
+        'cookie': json.dumps(cookies),
+        'clearCookiesBeforeLaunch': False,
+    })
+
+
 def inspect_window(pid, token=''):
     from worker import bit,check_access,handle_known_prompts,AccountUnavailable
     detail = bit('/browser/detail',{'id':pid})
     if token:
-        # Verify login after loading the saved profile, as on a later reopen.
-        cookies = detail.get('cookie') or []
-        if isinstance(cookies, str):
-            cookies = json.loads(cookies)
-        if not isinstance(cookies, list) or any(not isinstance(c, dict) for c in cookies):
-            raise ValueError('窗口 Cookie 格式异常，未修改。')
-        cookies = [c for c in cookies if not (
-            c.get('name') == 'auth_token' and str(c.get('domain', '')).lstrip('.').lower() == 'x.com'
-        )]
-        cookies.append(dict(name='auth_token',value=token,domain='.x.com',path='/',secure=True,httpOnly=True,expirationDate=time.time()+86400*365))
-        bit('/browser/update/partial', {
-            'ids': [pid],
-            'browserFingerPrint': {},
-            'cookie': json.dumps(cookies),
-            'clearCookiesBeforeLaunch': False,
-        })
+        save_token(pid, token, detail)
     if not detail.get('host') or not detail.get('port') or detail.get('proxyType')!='socks5':
         mark(pid,'pending','token 已保存至比特窗口，请配置 SOCKS5 代理后检测登录。' if token else '请先配置 SOCKS5 代理。')
         return
@@ -215,7 +239,7 @@ def prepare(body):
     for values in (proxies,tokens):
         if values and len(values)!=n:
             raise ValueError('代理和 token 须各按行与窗口数量一致；不修改的整项可留空。')
-    patches=[proxy(s) for s in proxies]
+    patches=[(s, proxy(s)) for s in proxies]
     if any(not re.fullmatch(r'[a-zA-Z0-9_-]{20,512}',s) for s in tokens):
         raise ValueError('token 格式不正确，请每行粘贴一个完整 token。')
     if action=='delete' and any(state(i)['state']!='delete' for i in ids):
@@ -268,7 +292,8 @@ def start(body):
             args=prepare(body)
             action, ids, *_ = args
             workers = min(DETECTION_WORKERS, len(ids)) if action == 'detect' else 1
-            job.update(running=True, results=[], action=action, total=len(ids), workers=workers)
+            job.update(running=True, results=[], action=action, total=len(ids), workers=workers,
+                       run_id=str(time.time_ns()), deleted_proxies=[])
             threading.Thread(target=perform,args=args,daemon=True).start()
         except Exception:
             operation_lock.release()
@@ -300,14 +325,31 @@ def perform(action,ids,names,patches,tokens,remark):
             pid=None if action=='create' else ids[index]
             try:
                 if action=='create':
-                    result=bit('/browser/update',dict(name=names[index],platform='https://x.com',platformIcon='x.com',url='https://x.com/home',remark=remark,browserFingerPrint={},**(patches[index] if patches else {})))
+                    result=bit('/browser/update',dict(name=names[index],platform='https://x.com',platformIcon='x.com',url='https://x.com/home',remark=remark,browserFingerPrint={},**(patches[index][1] if patches else {})))
                     pid=result['id']
-                    mark(pid,'pending','窗口已创建，等待配置与检测。')
+                    mark(pid, 'ready', '窗口已创建，默认可使用。')
+                    if patches:
+                        save_proxy(pid, patches[index][0])
+                    if tokens:
+                        save_token(pid, tokens[index], bit('/browser/detail', {'id': pid}))
                 elif action=='delete':
+                    with store.connect() as db:
+                        saved = db.execute('SELECT line FROM window_proxies WHERE id=?', (pid,)).fetchone()
+                    if saved:
+                        line = saved['line']
+                    else:
+                        detail = bit('/browser/detail', {'id': pid})
+                        line = '|'.join(str(detail.get(field) or '') for field in
+                                        ('host', 'port', 'proxyUserName', 'proxyPassword', ''))
+                        if not detail.get('host') or detail.get('proxyType') == 'noproxy':
+                            line = ''
                     if bit('/browser/pids/alive',{'ids':[pid]}).get(pid):
                         bit('/browser/close',{'id':pid})
                     bit('/browser/delete',{'id':pid})
+                    if line:
+                        job['deleted_proxies'].append(line)
                     with store.connect() as db:
+                        db.execute('DELETE FROM window_proxies WHERE id=?', (pid,))
                         db.execute('DELETE FROM windows WHERE id=?',(pid,))
                 elif action in ('configure','edit'):
                     if patches or tokens:
@@ -317,12 +359,14 @@ def perform(action,ids,names,patches,tokens,remark):
                             bit('/browser/close',{'id':pid})
                     patch={'ids':[pid],'browserFingerPrint':{}}
                     if patches:
-                        patch.update(patches[index])
+                        patch.update(patches[index][1])
                     if action=='edit':
                         patch['remark']=remark
                     bit('/browser/update/partial',patch)
-                if action!='delete' and (action!='edit' or patches):
-                    inspect_window(pid,tokens[index] if tokens else '')
+                    if patches:
+                        save_proxy(pid, patches[index][0])
+                    if action == 'configure' or patches:
+                        inspect_window(pid, tokens[index] if tokens else '')
                 current=state(pid) if action!='delete' else {'reason':'已删除'}
                 job['results'].append({'id':pid,'name':names[index] if action=='create' else pid,'message':current['reason']})
             except Exception:

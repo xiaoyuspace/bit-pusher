@@ -128,7 +128,8 @@ function renderWindows(){
   const tr=el('tr'),cell=el('td'),c=el('input');c.type='checkbox';c.checked=chosenWindows.has(w.id);c.setAttribute('aria-label','选择窗口 '+w.name);
   c.onchange=()=>{c.checked?chosenWindows.add(w.id):chosenWindows.delete(w.id);renderWindows()};cell.append(c);tr.append(cell);
   const title=el('td');title.append(el('div',w.name||'未命名窗口','handle'),el('div','#'+w.seq,'meta'));tr.append(title);
-  tr.append(el('td',w.proxy_ip||'—','proxy-cell'),el('td',w.remark||'—','remark-cell'));
+  tr.append(el('td',w.proxy_ip||'—','proxy-cell'),el('td',w.proxy_user||'—'),
+   el('td',w.proxy_password||'—'),el('td',w.remark||'—','remark-cell'));
   const status=el('td');status.append(el('span',windowLabels[w.state],'badge '+w.state));tr.append(status);
   tr.append(el('td',w.checked?new Date(w.checked*1000).toLocaleString('zh-CN',{hour12:false}):'尚未检测','date-cell'),el('td',w.reason||'—','message'));
   const actions=el('td');for(const [text,mode] of [['配置','configure'],['编辑','edit'],['检测','detect']]){const button=el('button',text,'text-button row-action');button.disabled=!!(model?.running||model?.window_job?.running);button.onclick=()=>{chosenWindows=new Set([w.id]);renderWindows();mode==='detect'?windowAction(mode):openWindowForm(mode)};actions.append(button)}
@@ -137,10 +138,11 @@ function renderWindows(){
   actions.append(manualCheck);
   tr.append(actions);$('windowList').append(tr);
  }
- if(!rows.length){const tr=el('tr'),td=el('td','没有匹配的窗口，请调整筛选条件。','empty-cell');td.colSpan=8;tr.append(td);$('windowList').append(tr)}
+ if(!rows.length){const tr=el('tr'),td=el('td','没有匹配的窗口，请调整筛选条件。','empty-cell');td.colSpan=10;tr.append(td);$('windowList').append(tr)}
  const visible=currentWindows();$('windowsAll').checked=visible.length>0&&visible.every(w=>chosenWindows.has(w.id));$('windowsAll').indeterminate=visible.some(w=>chosenWindows.has(w.id))&&!$('windowsAll').checked;
  renderWindowJob();
 }
+let shownDeletedProxies;
 function renderWindowJob(){
  const job=model?.window_job;if(!job)return;
  const busy=job.running||model.running,targets=windows.filter(w=>chosenWindows.has(w.id));
@@ -161,8 +163,25 @@ function renderWindowJob(){
  $('windowProgress').textContent = progress;
  $('windowSyncStatus').textContent = model.window_sync || '';
  $('windowResults').replaceChildren(...job.results.map(r=>el('p',(windows.find(w=>w.id===r.id)?.name||r.name||r.id||'窗口')+'：'+r.message)));
+ if(!job.running&&job.action==='delete'&&job.deleted_proxies?.length&&shownDeletedProxies!==job.run_id){
+  shownDeletedProxies=job.run_id;
+  $('deletedProxyLines').value=job.deleted_proxies.join('\n');
+  $('deletedProxyStatus').textContent='';
+  $('deletedProxyDialog').showModal();
+ }
  if(wasWindowRunning&&!job.running){wasWindowRunning=false;loadProfiles()}else wasWindowRunning=job.running;
 }
+$('copyDeletedProxies').onclick=async()=>{
+ const lines=$('deletedProxyLines');
+ try{
+  await navigator.clipboard.writeText(lines.value);
+  $('deletedProxyStatus').textContent='已复制全部代理。';
+ }catch{
+  lines.focus();
+  lines.select();
+  $('deletedProxyStatus').textContent='已选中全部代理，请按 Ctrl+C 复制。';
+ }
+};
 function clearWindowForm(){$('windowTokens').value='';$('windowProxies').value=''}
 function closeWindowForm(){$('windowsDialog').close();clearWindowForm()}
 function openWindowForm(mode){
