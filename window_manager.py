@@ -382,8 +382,9 @@ def perform(action,ids,names,patches,tokens,remark):
                         line = saved['line']
                     else:
                         detail = bit('/browser/detail', {'id': pid})
+                        # BitBrowser may return an encoded password for an existing profile.
                         line = '|'.join(str(detail.get(field) or '') for field in
-                                        ('host', 'port', 'proxyUserName', 'proxyPassword', ''))
+                                        ('host', 'port', 'proxyUserName')) + '||'
                         if not detail.get('host') or detail.get('proxyType') == 'noproxy':
                             line = ''
                     if bit('/browser/pids/alive',{'ids':[pid]}).get(pid):
