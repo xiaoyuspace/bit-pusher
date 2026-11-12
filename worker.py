@@ -209,13 +209,10 @@ def handle_known_prompts(page):
         if not title.count() or not title.first.is_visible():
             continue
         dialog = page.locator('[role="dialog"],[role="alertdialog"]').filter(has=title)
-        confirm = dialog.locator('button,[role="button"]').filter(
-            has=page.get_by_text(button_text, exact=True), visible=True
-        )
+        confirm = dialog.get_by_role('button', name=button_text, exact=True).filter(visible=True)
         if confirm.count() == 1:
             try:
-                # An X dialog can be visible underneath another prompt.
-                confirm.click(trial=True, timeout=1000)
+                confirm.click(timeout=1500)
             except PlaywrightTimeout:
                 if title_text == 'Updates to our Terms of Service' and confirm.is_enabled():
                     confirm.focus(timeout=3000)
@@ -224,7 +221,6 @@ def handle_known_prompts(page):
                         title.first.wait_for(state='hidden', timeout=15000)
                         return True
             else:
-                confirm.click(timeout=10000)
                 title.first.wait_for(state='hidden', timeout=15000)
                 return True
         inaccessible_prompt = title_text
@@ -233,7 +229,15 @@ def handle_known_prompts(page):
     if urlparse(page.url).hostname in ('x.com', 'www.x.com', 'twitter.com', 'www.twitter.com'):
         accept = page.get_by_role('button', name=ACCEPT_COOKIES).filter(visible=True)
         if accept.count() == 1:
-            accept.click(timeout=10000)
+            try:
+                accept.click(timeout=1500)
+            except PlaywrightTimeout:
+                if not accept.is_enabled():
+                    raise AutoPublishBlocked('Cookie 提示的确认按钮暂不可用。') from None
+                accept.focus(timeout=3000)
+                if not accept.evaluate('(button) => button === document.activeElement'):
+                    raise AutoPublishBlocked('Cookie 提示的确认按钮未获得键盘焦点。') from None
+                accept.press('Enter', timeout=3000)
             accept.wait_for(state='hidden', timeout=10000)
             handled = True
     for dialog in page.get_by_role('dialog').all() + page.get_by_role('alertdialog').all():
