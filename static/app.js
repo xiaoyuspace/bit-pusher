@@ -303,3 +303,93 @@ async function submitManualCheck(action){
 $('manualCheckOpen').onclick=()=>submitManualCheck('open');
 $('manualCheckConfirm').onclick=()=>submitManualCheck('confirm');
 showPage(location.hash==='#windows'?'windows':'tasks');
+
+const credentialDialog = $('credentialTransfer');
+const credentialEncoder = new TextEncoder();
+const credentialDecoder = new TextDecoder();
+
+function bytesToHex(bytes) {
+ return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function hexToBytes(hex, length) {
+ if (typeof hex !== 'string' || hex.length !== length * 2 || !/^[a-f0-9]+$/i.test(hex)) {
+  throw Error('加密文件格式无效。');
+ }
+ return Uint8Array.from(hex.match(/../g), pair => parseInt(pair, 16));
+}
+
+async function credentialKey(passphrase, salt) {
+ const material = await crypto.subtle.importKey('raw', credentialEncoder.encode(passphrase), 'PBKDF2', false, ['deriveKey']);
+ return crypto.subtle.deriveKey({name:'PBKDF2', salt, iterations:600000, hash:'SHA-256'},
+  material, {name:'AES-GCM', length:256}, false, ['encrypt','decrypt']);
+}
+
+async function exportWindowCredentials(passphrase) {
+ const {records} = await api('/api/windows/credentials/export');
+ if (!Object.keys(records).length) throw Error('当前电脑没有已保存的窗口凭据。');
+ const plaintext = credentialEncoder.encode(JSON.stringify({records}));
+ if (plaintext.length > 1000000) throw Error('窗口凭据文件过大。');
+ const salt = crypto.getRandomValues(new Uint8Array(16));
+ const iv = crypto.getRandomValues(new Uint8Array(12));
+ const key = await credentialKey(passphrase, salt);
+ const data = await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, plaintext);
+ const payload = {version:1, salt:bytesToHex(salt), iv:bytesToHex(iv), data:bytesToHex(new Uint8Array(data))};
+ const link = el('a');
+ link.download = 'bit-publisher-credentials.json';
+ link.href = URL.createObjectURL(new Blob([JSON.stringify(payload)], {type:'application/json'}));
+ link.click();
+ setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+ return '已导出加密文件。请在另一台电脑输入同一口令导入。';
+}
+
+async function importWindowCredentials(passphrase) {
+ const file = $('credentialFile').files[0];
+ if (!file || file.size > 2010000) throw Error('请选择有效的加密文件。');
+ const payload = JSON.parse(await file.text());
+ if (payload?.version !== 1 || typeof payload.data !== 'string' || payload.data.length > 2000032) {
+  throw Error('不支持的凭据文件格式。');
+ }
+ const salt = hexToBytes(payload.salt, 16);
+ const iv = hexToBytes(payload.iv, 12);
+ const data = hexToBytes(payload.data, payload.data.length / 2);
+ const key = await credentialKey(passphrase, salt);
+ let plaintext;
+ try {
+  plaintext = await crypto.subtle.decrypt({name:'AES-GCM', iv}, key, data);
+ } catch {
+  throw Error('口令错误或加密文件已损坏。');
+ }
+ const result = await api('/api/windows/credentials/import', JSON.parse(credentialDecoder.decode(plaintext)));
+ await loadProfiles();
+ return `已补齐 ${result.imported} 个窗口，${result.existing} 个无需补齐，${result.missing} 个在本机未找到。`;
+}
+
+async function transferCredentials(action) {
+ const passphrase = $('credentialPassphrase').value;
+ const status = $('credentialStatus');
+ if (passphrase.length < 12) {
+  status.textContent = '请输入至少 12 个字符的口令。';
+  return;
+ }
+ $('exportCredentials').disabled = $('importCredentials').disabled = true;
+ status.textContent = '处理中…';
+ try {
+  status.textContent = await action(passphrase);
+ } catch (error) {
+  status.textContent = error instanceof SyntaxError ? '加密文件格式无效。' : error.message;
+ } finally {
+  $('credentialPassphrase').value = '';
+  $('exportCredentials').disabled = $('importCredentials').disabled = false;
+ }
+}
+$('openCredentialTransfer').onclick = () => {
+ $('credentialStatus').textContent = '';
+ credentialDialog.showModal();
+};
+$('exportCredentials').onclick = () => transferCredentials(exportWindowCredentials);
+$('importCredentials').onclick = () => transferCredentials(importWindowCredentials);
+credentialDialog.addEventListener('close', () => {
+ $('credentialPassphrase').value = '';
+ $('credentialFile').value = '';
+});

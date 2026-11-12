@@ -14,7 +14,7 @@ import window_manager as wm
 import window_sync
 from worker import profiles, publisher
 
-VERSION = '2026-11-11-detect-home-first'
+VERSION = '2026-11-12-credential-transfer'
 PORT = 8766
 TOKEN = secrets.token_urlsafe(32)
 PICKER_LOCK = Lock()
@@ -100,9 +100,20 @@ class Handler(BaseHTTPRequestHandler):
             return self.send({'error':'请求校验失败，请刷新页面。'},403)
         try:
             size = int(self.headers.get('Content-Length',0))
-            if not 0 <= size <= 200000:
+            limit = 1_000_000 if self.path == '/api/windows/credentials/import' else 200_000
+            if not 0 <= size <= limit:
                 raise ValueError('请求过大。')
             body = json.loads(self.rfile.read(size) or b'{}')
+            if self.path == '/api/windows/credentials/export':
+                return self.send({'records': wm.export_credentials()})
+            if self.path == '/api/windows/credentials/import':
+                if not wm.operation_lock.acquire(blocking=False):
+                    raise ValueError('窗口操作正在执行，请稍后再导入。')
+                try:
+                    result = wm.import_credentials(body.get('records'))
+                finally:
+                    wm.operation_lock.release()
+                return self.send(result)
             if self.path == '/api/windows/extract-logins':
                 return self.send({'logins': wm.extract_logins(str(body.get('text', '')))})
             if self.path == '/api/windows/manual-check':

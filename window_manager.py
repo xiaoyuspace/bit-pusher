@@ -64,6 +64,61 @@ def save_proxy(pid, line):
         db.execute('INSERT OR REPLACE INTO window_proxies VALUES (?,?)', (pid, line))
 
 
+def export_credentials():
+    from worker import profiles
+
+    ids = {profile['id'] for profile in profiles()}
+    init()
+    with store.connect() as db:
+        db.execute('BEGIN')
+        proxies = dict(db.execute('SELECT id,line FROM window_proxies'))
+        accounts = {row[0]: list(row[1:]) for row in db.execute(
+            'SELECT id,username,password,twofa FROM window_accounts')}
+    return {pid: {'proxy': proxies.get(pid), 'account': accounts.get(pid)}
+            for pid in sorted(ids & (proxies.keys() | accounts.keys()))}
+
+
+def import_credentials(records):
+    from worker import profiles
+
+    if not isinstance(records, dict) or not records:
+        raise ValueError('凭据文件没有可导入的窗口。')
+    for pid, record in records.items():
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', pid) or not isinstance(record, dict):
+            raise ValueError('凭据文件格式无效。')
+        line, account = record.get('proxy'), record.get('account')
+        if line is not None:
+            if not isinstance(line, str) or len(line) > 2048:
+                raise ValueError('凭据文件中的代理记录无效。')
+            proxy(line)
+        if account is not None and (
+            not isinstance(account, list) or len(account) != 3
+            or any(not isinstance(value, str) or not value or len(value) > 2048 for value in account)
+            or not re.fullmatch(r'[A-Za-z0-9_]{1,15}', account[0])
+            or not re.fullmatch(r'[A-Za-z2-7]{16,64}', account[2])
+        ):
+            raise ValueError('凭据文件中的账号记录无效。')
+
+    available = {profile['id'] for profile in profiles()}
+    counts = dict(imported=0, existing=0, missing=0)
+    init()
+    with store.connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        for pid, record in records.items():
+            if pid not in available:
+                counts['missing'] += 1
+                continue
+            inserted = False
+            if record.get('proxy'):
+                inserted |= bool(db.execute('INSERT OR IGNORE INTO window_proxies VALUES (?,?)',
+                                            (pid, record['proxy'])).rowcount)
+            if record.get('account'):
+                inserted |= bool(db.execute('INSERT OR IGNORE INTO window_accounts VALUES (?,?,?,?)',
+                                            (pid, *record['account'])).rowcount)
+            counts['imported' if inserted else 'existing'] += 1
+    return counts
+
+
 def state(pid):
     init()
     with store.connect() as db:
