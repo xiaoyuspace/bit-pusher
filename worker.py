@@ -329,10 +329,12 @@ class Publisher:
     def schedule_close(self, profile_id, tid, message, url):
         def close_window():
             try:
-                bit('/browser/close', {'id': profile_id})
+                from window_manager import close_window_on_home
+
+                close_window_on_home(profile_id)
                 close_message = ' 比特窗口已关闭。'
             except Exception:
-                close_message = ' 比特窗口未能自动关闭，请手动关闭。'
+                close_message = ' 未能整理标签页并自动关窗，请手动检查。'
             store.update(tid, 'success', message + close_message, url)
 
         timer = threading.Timer(10, close_window)

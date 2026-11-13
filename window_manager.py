@@ -268,7 +268,7 @@ def browser_debug_endpoint(opened):
     return endpoint
 
 
-def close_window_tabs(pid):
+def close_window_tabs(pid, keep_url=None):
     from playwright.sync_api import sync_playwright
     from worker import bit
 
@@ -276,10 +276,25 @@ def close_window_tabs(pid):
         endpoint = browser_debug_endpoint(bit('/browser/open', {'id': pid}))
         browser = pw.chromium.connect_over_cdp(endpoint, is_local=True, timeout=30000)
         old_pages = [page for context in browser.contexts for page in context.pages]
-        # Keep Chromium open until BitBrowser can close and save the empty session.
-        browser.contexts[0].new_page()
+        keep = next((page for page in old_pages if page.url == keep_url), None)
+        if keep is None:
+            # Keep Chromium open while closing the old tabs.
+            keep = browser.contexts[0].new_page()
+            if keep_url:
+                keep.goto(keep_url, wait_until='commit', timeout=15000)
         for page in old_pages:
-            page.close()
+            if page is not keep and not page.is_closed():
+                page.close()
+        if keep_url and (keep.is_closed() or keep.url != keep_url):
+            raise RuntimeError('X 首页未能保留')
+
+
+def close_window_on_home(pid):
+    from worker import bit
+
+    if bit('/browser/pids/alive', {'ids': [pid]}).get(pid):
+        close_window_tabs(pid, keep_url='https://x.com/home')
+        bit('/browser/close', {'id': pid})
 
 
 def clear_window_data(pid):
@@ -345,9 +360,9 @@ def inspect_window(pid, token=''):
     else:
         message = '检测通过：已登录，发帖框与本账号作品可正常打开。'
         try:
-            bit('/browser/close', {'id': pid})
+            close_window_on_home(pid)
         except Exception:
-            message += ' 窗口未能自动关闭，可手动关闭。'
+            message += ' 未能整理标签页并自动关窗，请手动检查。'
         else:
             message += ' 比特窗口已关闭。'
         mark(pid, 'ready', message)
