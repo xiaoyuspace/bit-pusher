@@ -14,7 +14,7 @@ import window_manager as wm
 import window_sync
 from worker import profiles, publisher
 
-VERSION = '2026-11-12-independent-windows'
+VERSION = '2026-11-13-batch-manual-check'
 PORT = 8766
 TOKEN = secrets.token_urlsafe(32)
 PICKER_LOCK = Lock()
@@ -81,7 +81,8 @@ class Handler(BaseHTTPRequestHandler):
                 activity = publisher.activity
                 closing_tasks = publisher.closing_task_ids()
                 reserved_profiles = sorted(publisher.reserved_profiles())
-            return self.send({'version':VERSION,'pid':os.getpid(),'token':TOKEN,'tasks':store.tasks(),
+            return self.send({'version':VERSION,'batch_manual_check':True,
+                              'pid':os.getpid(),'token':TOKEN,'tasks':store.tasks(),
                               'running':running,'current':current,'activity':activity,
                               'closing_tasks':closing_tasks,'reserved_profiles':reserved_profiles,'window_job':wm.job,
                               'window_sync':window_sync.status,'window_sync_revision':window_sync.revision})

@@ -303,12 +303,19 @@ async function submitManualCheck(action,id,name){
   return;
  }
  const results=manualCheckTargets.map(window=>({id:window.id,state}));
+ if(action==='confirm'&&results.length>1&&model?.batch_manual_check!==true){
+  status.textContent='当前服务版本不支持批量手动检测。请关闭旧版发布台服务，重新运行 start.cmd，再刷新页面。';
+  return;
+ }
  const controls=manualCheckDialog.querySelectorAll('button,select');
  manualCheckBusy=true;
  controls.forEach(control=>control.disabled=true);
  status.textContent=action==='open'?`正在打开 ${name}…`:'正在保存…';
  try{
-  await api('/api/windows/manual-check',{id,action,results,confirmed:action==='confirm'});
+  const payload=action==='open'?{id,action}:results.length===1
+   ?{...results[0],action,confirmed:true}
+   :{action,results,confirmed:true};
+  await api('/api/windows/manual-check',payload);
   if(action==='open'){
    status.textContent=`${name} 已打开。检查后请返回这里选择结果。`;
   }else{
