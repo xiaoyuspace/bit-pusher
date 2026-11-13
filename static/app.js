@@ -251,6 +251,10 @@ function openWindowForm(mode){
  $('namesField').hidden=mode!=='create';$('tokensField').hidden=mode==='edit';$('remarkField').hidden=mode==='configure';
  const targets=windows.filter(w=>chosenWindows.has(w.id)).sort((a,b)=>a.seq-b.seq);
  $('windowTargets').textContent=mode==='create'?'每行填写一个窗口名称，可同时创建多个窗口。平台默认为 x.com。':`已选 ${targets.length} 个窗口：`+targets.map(w=>`#${w.seq} ${w.name}`).join('、');
+ if(mode==='configure'){
+  const note=el('p','同时填写代理和登录信息会按换号处理，先清空对应窗口的本地和云端浏览器数据，再保存新配置。');
+  $('windowTargets').append(note);
+ }
  $('windowSubmit').textContent=mode==='create'?'创建窗口':'保存配置';$('windowsDialog').showModal();
 }
 $('windowsClose').onclick=closeWindowForm;$('windowCancel').onclick=closeWindowForm;$('windowsDialog').addEventListener('close',clearWindowForm);

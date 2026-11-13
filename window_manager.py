@@ -232,10 +232,7 @@ def check_own_post(page):
     raise PostCheckIncomplete('作品详情未正常加载，暂无法确认冻结状态，请重试检测。')
 
 
-def save_token(pid, token, detail):
-    from worker import bit
-
-    # Verify login after loading the saved profile, as on a later reopen.
+def token_cookie_patch(token, detail):
     cookies = detail.get('cookie') or []
     if isinstance(cookies, str):
         cookies = json.loads(cookies)
@@ -245,12 +242,33 @@ def save_token(pid, token, detail):
         c.get('name') == 'auth_token' and str(c.get('domain', '')).lstrip('.').lower() == 'x.com'
     )]
     cookies.append(dict(name='auth_token',value=token,domain='.x.com',path='/',secure=True,httpOnly=True,expirationDate=time.time()+86400*365))
+    return {
+        'cookie': json.dumps(cookies),
+        'clearCookiesBeforeLaunch': False,
+    }
+
+
+def save_token(pid, token, detail):
+    from worker import bit
+
+    # Verify login after loading the saved profile, as on a later reopen.
     bit('/browser/update/partial', {
         'ids': [pid],
         'browserFingerPrint': {},
-        'cookie': json.dumps(cookies),
-        'clearCookiesBeforeLaunch': False,
+        **token_cookie_patch(token, detail),
     })
+
+
+def clear_window_data(pid):
+    from worker import bit
+
+    deadline = time.monotonic() + 15
+    while bit('/browser/pids/alive', {'ids': [pid]}).get(pid):
+        if time.monotonic() >= deadline:
+            raise TimeoutError('窗口未关闭')
+        time.sleep(0.25)
+    bit('/cache/clear', {'ids': [pid]})
+    bit('/browser/cookies/clear', {'browserId': pid, 'saveSynced': False})
 
 
 def inspect_window(pid, token=''):
@@ -438,6 +456,7 @@ def perform(action,ids,names,patches,tokens,remark):
         for index in range(len(names) if action=='create' else len(ids)):
             pid=None if action=='create' else ids[index]
             account, token = tokens[index] if tokens else (None, '')
+            failure = '操作失败，请检查比特浏览器、窗口状态和输入；未输出凭据。'
             try:
                 if action=='create':
                     result=bit('/browser/update',dict(name=names[index],platform='https://x.com',platformIcon='x.com',url='https://x.com/home',remark=remark,browserFingerPrint={},**(patches[index][1] if patches else {})))
@@ -470,6 +489,7 @@ def perform(action,ids,names,patches,tokens,remark):
                         db.execute('DELETE FROM window_accounts WHERE id=?', (pid,))
                         db.execute('DELETE FROM windows WHERE id=?',(pid,))
                 elif action in ('configure','edit'):
+                    replace_account = action == 'configure' and bool(patches and token)
                     if patches or tokens:
                         mark(pid,'pending','配置已开始，等待重新检测。')
                         # Close before saving so a running session cannot overwrite the new settings.
@@ -480,16 +500,30 @@ def perform(action,ids,names,patches,tokens,remark):
                         patch.update(patches[index][1])
                     if action=='edit':
                         patch['remark']=remark
+                    if replace_account:
+                        failure = '清空窗口数据失败。请确认窗口已关闭、比特浏览器支持清理接口，再重新提交代理和登录信息。'
+                        clear_window_data(pid)
+                        patch.update(token_cookie_patch(token, {}))
+                        failure = '旧窗口数据已清空，但保存新配置未完成。请重新提交代理和登录信息。'
                     bit('/browser/update/partial',patch)
-                    if patches:
+                    if replace_account:
+                        with store.connect() as db:
+                            db.execute('INSERT OR REPLACE INTO window_proxies VALUES (?,?)', (pid, patches[index][0]))
+                            if account:
+                                db.execute('INSERT OR REPLACE INTO window_accounts VALUES (?,?,?,?)', (pid, *account))
+                            else:
+                                db.execute('DELETE FROM window_accounts WHERE id=?', (pid,))
+                        failure = '新代理和登录信息已保存，但检测未完成，请重新检测。'
+                    elif patches:
                         save_proxy(pid, patches[index][0])
                     if action == 'configure' or patches:
-                        inspect_window(pid, token)
-                        save_account(pid, account)
+                        inspect_window(pid, '' if replace_account else token)
+                        if not replace_account:
+                            save_account(pid, account)
                 current=state(pid) if action!='delete' else {'reason':'已删除'}
                 job['results'].append({'id':pid,'name':names[index] if action=='create' else pid,'message':current['reason']})
             except Exception:
-                job['results'].append({'id':pid,'message':'操作失败，请检查比特浏览器、窗口状态和输入；未输出凭据。'})
+                job['results'].append({'id':pid,'message':failure})
     finally:
         tokens.clear()
         patches.clear()
