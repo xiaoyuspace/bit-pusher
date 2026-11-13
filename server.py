@@ -121,6 +121,9 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == '/api/windows/manual-check':
                 wm.manual_check(body)
                 return self.send({'ok':True})
+            if self.path == '/api/windows/browse/stop':
+                wm.stop_browsing()
+                return self.send({'ok':True})
             if self.path == '/api/windows':
                 wm.start(body)
                 return self.send({'ok':True})

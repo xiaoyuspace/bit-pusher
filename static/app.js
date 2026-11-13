@@ -180,7 +180,7 @@ function renderWindowJob(){
  const selectedBusy = targets.some(w => reserved.has(w.id));
  $('windowSelection').textContent=`已选 ${targets.length} 项`;
  $('windowCreate').disabled=busy;$('windowSubmit').disabled=busy||(windowMode!=='create'&&selectedBusy);
- for(const id of ['windowConfigure','windowDetect','windowManualCheck'])$(id).disabled=busy||selectedBusy||!targets.length;
+ for(const id of ['windowConfigure','windowDetect','windowManualCheck','windowBrowse'])$(id).disabled=busy||selectedBusy||!targets.length;
  $('windowDelete').disabled=busy||selectedBusy||!targets.length||targets.some(w=>w.state!=='delete');
  document.querySelectorAll('.row-action').forEach(button => {
   const reservedWindow = reserved.has(button.closest('[data-profile-id]')?.dataset.profileId);
@@ -207,6 +207,16 @@ function renderWindowJob(){
   $('deletedProxyLines').value=job.deleted_proxies.join('\n');
   $('deletedProxyStatus').textContent='';
   $('deletedProxyDialog').showModal();
+ }
+ const browsing=job.running&&job.action==='browse';
+ $('stopWindowBrowse').hidden=!browsing;
+ if(browsing){
+  const current=windows.find(window=>window.id===job.current);
+  $('windowProgress').textContent=`正在养号 · 已处理 ${job.results.length}/${job.total}`+
+   (current?` · #${current.seq} ${current.name}`:'');
+ }else if(job.action==='browse'){
+  $('windowProgress').textContent=`养号已结束 · 共 ${job.results.length} 个窗口`;
+  $('stopWindowBrowse').disabled=false;
  }
  if(wasWindowRunning&&!job.running){wasWindowRunning=false;loadProfiles()}else wasWindowRunning=job.running;
 }
@@ -335,6 +345,34 @@ $('windowManualCheck').onclick=()=>openManualCheck(
 );
 $('manualCheckOpen').onclick=()=>submitManualCheck('open',manualCheckTargets[0].id,manualCheckTargets[0].name);
 $('manualCheckConfirm').onclick=()=>submitManualCheck('confirm');
+const browseDialog=$('windowBrowseDialog');
+let browseTargets=[];
+$('windowBrowse').onclick=()=>{
+ browseTargets=windows.filter(window=>chosenWindows.has(window.id)).map(window=>window.id);
+ if(!browseTargets.length)return;
+ $('windowBrowseTargets').textContent=`已选 ${browseTargets.length} 个窗口`;
+ $('windowBrowseStatus').textContent='';
+ browseDialog.showModal();
+};
+$('cancelWindowBrowse').onclick=()=>browseDialog.close();
+$('windowBrowseForm').onsubmit=async event=>{
+ event.preventDefault();
+ $('startWindowBrowse').disabled=true;
+ try{
+  await api('/api/windows',{action:'browse',ids:browseTargets,minutes:$('windowBrowseMinutes').valueAsNumber});
+  browseDialog.close();
+  await refresh();
+ }catch(error){$('windowBrowseStatus').textContent=error.message}
+ finally{$('startWindowBrowse').disabled=false}
+};
+$('stopWindowBrowse').onclick=async()=>{
+ $('stopWindowBrowse').disabled=true;
+ try{
+  await api('/api/windows/browse/stop');
+  toast('已请求停止养号');
+  await refresh();
+ }catch(error){$('stopWindowBrowse').disabled=false;toast(error.message)}
+};
 showPage(location.hash==='#windows'?'windows':'tasks');
 
 const credentialDialog = $('credentialTransfer');

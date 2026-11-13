@@ -12,6 +12,7 @@ operation_lock = threading.Lock()
 managed_profiles = None
 job = {'running': False, 'results': []}
 DETECTION_WORKERS = 3
+browse_stop = threading.Event()
 
 def init():
     with store.connect() as db:
@@ -351,10 +352,49 @@ def inspect_window(pid, token=''):
             message += ' 比特窗口已关闭。'
         mark(pid, 'ready', message)
 
+def browse_window(pid, minutes):
+    from playwright.sync_api import sync_playwright
+    from worker import bit, check_access, AccountUnavailable, LoginRequired
+
+    opened_here = not bit('/browser/pids/alive', {'ids': [pid]}).get(pid)
+    opened = bit('/browser/open', {'id': pid})
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.connect_over_cdp(browser_debug_endpoint(opened), is_local=True, timeout=15000)
+            page = browser.contexts[0].new_page()
+            try:
+                page.goto('https://x.com/home', wait_until='domcontentloaded', timeout=15000)
+                check_access(page)
+                if urlparse(page.url).hostname not in ('x.com', 'www.x.com'):
+                    raise ValueError('X did not load')
+                page.get_by_test_id('primaryColumn').get_by_role('article').first.wait_for(timeout=12000)
+                deadline = time.monotonic() + minutes * 60
+                while not browse_stop.is_set() and time.monotonic() < deadline:
+                    check_access(page)
+                    if urlparse(page.url).path != '/home':
+                        return '浏览已停止：页面已离开 X 首页。'
+                    page.mouse.wheel(0, 550)
+                    browse_stop.wait(max(0, min(5, deadline - time.monotonic())))
+                return '浏览已停止。' if browse_stop.is_set() else '已完成时间线浏览。'
+            finally:
+                page.close()
+    except (AccountUnavailable, LoginRequired):
+        return '浏览已停止：请手动检查登录、账号状态或安全验证。'
+    finally:
+        if opened_here:
+            bit('/browser/close', {'id': pid})
+
+
+def stop_browsing():
+    if not job['running'] or job.get('action') != 'browse':
+        raise ValueError('当前没有运行中的养号任务。')
+    browse_stop.set()
+
+
 def prepare(body):
     from worker import profiles
     action=body.get('action')
-    if action not in ('create','configure','edit','detect','delete'):
+    if action not in ('create','configure','edit','detect','delete','browse'):
         raise ValueError('无效窗口操作。')
     available={r['id']:r for r in profiles()}
     ids=body.get('ids',[])
@@ -449,6 +489,9 @@ def start(body):
 
     args = prepare(body)
     action, ids, *_ = args
+    minutes = body.get('minutes', 2)
+    if action == 'browse' and (type(minutes) is not int or not 1 <= minutes <= 15):
+        raise ValueError('每个窗口的浏览时长须为 1–15 分钟。')
     with publisher.lock:
         if action != 'create' and publisher.reserved_profiles().intersection(ids):
             raise ValueError('所选窗口中有窗口已被发布队列占用，请取消勾选后重试。')
@@ -458,9 +501,12 @@ def start(body):
             managed_profiles = None if action == 'create' else set(ids)
             workers = min(DETECTION_WORKERS, len(ids)) if action == 'detect' else 1
             job.update(running=True, results=[], action=action, total=len(ids), workers=workers,
-                       run_id=str(time.time_ns()), deleted_proxies=[])
-            threading.Thread(target=perform,args=args,daemon=True).start()
+                       run_id=str(time.time_ns()), deleted_proxies=[], current=None)
+            if action == 'browse':
+                browse_stop.clear()
+            threading.Thread(target=perform,args=args,kwargs={'minutes': minutes},daemon=True).start()
         except Exception:
+            job['running'] = False
             release_management()
             raise
 
@@ -480,11 +526,23 @@ def detect_windows(ids, tokens):
             job['results'].append({'id': pid, 'name': pid, 'message': message})
 
 
-def perform(action,ids,names,patches,tokens,remark):
+def perform(action,ids,names,patches,tokens,remark,minutes=2):
     from worker import bit
     try:
         if action == 'detect':
             detect_windows(ids, tokens)
+            return
+        if action == 'browse':
+            for pid in ids:
+                if browse_stop.is_set():
+                    message = '已取消，未打开窗口。'
+                else:
+                    job['current'] = pid
+                    try:
+                        message = browse_window(pid, minutes)
+                    except Exception:
+                        message = '浏览未完成，请检查比特窗口、登录状态和网络。'
+                job['results'].append({'id': pid, 'message': message})
             return
         for index in range(len(names) if action=='create' else len(ids)):
             pid=None if action=='create' else ids[index]
@@ -566,5 +624,6 @@ def perform(action,ids,names,patches,tokens,remark):
     finally:
         tokens.clear()
         patches.clear()
+        job['current'] = None
         job['running']=False
         release_management()
