@@ -259,6 +259,28 @@ def save_token(pid, token, detail):
     })
 
 
+def browser_debug_endpoint(opened):
+    endpoint = opened.get('ws') or 'http://' + opened.get('http', '')
+    parsed = urlparse(endpoint)
+    if parsed.hostname not in ('127.0.0.1', 'localhost', '::1') or parsed.scheme not in ('http', 'ws'):
+        raise ValueError('无效本机调试地址')
+    return endpoint
+
+
+def close_window_tabs(pid):
+    from playwright.sync_api import sync_playwright
+    from worker import bit
+
+    with sync_playwright() as pw:
+        endpoint = browser_debug_endpoint(bit('/browser/open', {'id': pid}))
+        browser = pw.chromium.connect_over_cdp(endpoint, is_local=True, timeout=30000)
+        old_pages = [page for context in browser.contexts for page in context.pages]
+        # Keep Chromium open until BitBrowser can close and save the empty session.
+        browser.contexts[0].new_page()
+        for page in old_pages:
+            page.close()
+
+
 def clear_window_data(pid):
     from worker import bit
 
@@ -285,10 +307,7 @@ def inspect_window(pid, token=''):
     try:
         with sync_playwright() as pw:
             opened=bit('/browser/open',{'id':pid})
-            endpoint=opened.get('ws') or 'http://'+opened.get('http','')
-            parsed=urlparse(endpoint)
-            if parsed.hostname not in ('127.0.0.1','localhost','::1') or parsed.scheme not in ('http','ws'):
-                raise ValueError('无效本机调试地址')
+            endpoint=browser_debug_endpoint(opened)
             browser=pw.chromium.connect_over_cdp(endpoint,is_local=True,timeout=30000)
             context=browser.contexts[0]
             page=context.new_page()
@@ -508,6 +527,10 @@ def perform(action,ids,names,patches,tokens,remark):
                         mark(pid,'pending','配置已开始，等待重新检测。')
                         # Close before saving so a running session cannot overwrite the new settings.
                         if bit('/browser/pids/alive',{'ids':[pid]}).get(pid):
+                            if replace_account:
+                                failure = '关闭旧标签页失败，请关闭该比特窗口后重新提交代理和登录信息。'
+                                close_window_tabs(pid)
+                                failure = '关闭比特窗口失败，请关闭后重新提交代理和登录信息。'
                             bit('/browser/close',{'id':pid})
                     patch={'ids':[pid],'browserFingerPrint':{}}
                     if patches:
@@ -518,6 +541,8 @@ def perform(action,ids,names,patches,tokens,remark):
                         failure = '清空窗口数据失败。请确认窗口已关闭、比特浏览器支持清理接口，再重新提交代理和登录信息。'
                         clear_window_data(pid)
                         patch.update(token_cookie_patch(token, {}))
+                        # Synced tabs and configured startup URLs can restore old pages.
+                        patch.update(syncTabs=False, url='https://x.com/home')
                         failure = '旧窗口数据已清空，但保存新配置未完成。请重新提交代理和登录信息。'
                     bit('/browser/update/partial',patch)
                     if replace_account:

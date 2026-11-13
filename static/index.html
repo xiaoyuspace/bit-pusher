@@ -37,8 +37,14 @@
 </form></dialog><dialog id="manualCheckDialog">
 <form method="dialog">
 <div class="dialog-head"><h2>手动检测</h2><button aria-label="关闭">×</button></div>
-<p>逐个打开比特窗口检查，选择检测结果后一起保存。</p>
-<div id="manualCheckRows"></div>
+<div id="manualCheckTargets" class="summary"></div>
+<label>检测结果<select id="manualCheckState">
+<option value="">请选择状态</option>
+<option value="pending">待配置</option>
+<option value="ready">可使用</option>
+<option value="delete">待删除</option>
+</select></label>
+<button type="button" id="manualCheckOpen">打开比特窗口</button>
 <p id="manualCheckStatus" role="status"></p>
 <div class="dialog-actions"><button>取消</button><button type="button" class="primary" id="manualCheckConfirm">保存检测结果</button></div>
 </form>

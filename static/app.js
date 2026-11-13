@@ -279,42 +279,30 @@ async function windowAction(action){
 $('windowCreate').onclick=()=>openWindowForm('create');$('windowConfigure').onclick=()=>openWindowForm('configure');$('windowDetect').onclick=()=>windowAction('detect');$('windowDelete').onclick=()=>windowAction('delete');
 $('windowForm').onsubmit=e=>{e.preventDefault();windowAction(windowMode)};
 let manualCheckBusy=false;
-const manualCheckRows=$('manualCheckRows');
+let manualCheckTargets=[];
 const manualCheckDialog=$('manualCheckDialog');
 
 function openManualCheck(targets){
  if(manualCheckBusy||!targets.length)return;
- manualCheckRows.replaceChildren();
- for(const window of targets){
-  const name=`#${window.seq} · ${window.name||'未命名窗口'}`;
-  const row=el('div',null,'summary manual-check-row');
-  const label=el('label',name);
-  const state=el('select');
-  state.dataset.id=window.id;
-  state.append(new Option(`保留当前状态（${windowLabels[window.state]}）`,''));
-  for(const [value,text] of Object.entries(windowLabels))state.append(new Option(text,value));
-  if(targets.length===1)state.value=window.state;
-  label.append(state);
-  const open=el('button','打开比特窗口');
-  open.type='button';
-  open.onclick=()=>submitManualCheck('open',window.id,name);
-  row.append(label,open);
-  manualCheckRows.append(row);
- }
+ manualCheckTargets=targets;
+ const single=targets.length===1;
+ $('manualCheckTargets').textContent=`已选 ${targets.length} 个窗口：`+
+  targets.map(window=>`#${window.seq} ${window.name||'未命名窗口'}`).join('、');
+ $('manualCheckOpen').hidden=!single;
+ $('manualCheckState').value=single?targets[0].state:'';
  $('manualCheckStatus').textContent='';
  manualCheckDialog.showModal();
 }
 
 async function submitManualCheck(action,id,name){
  if(manualCheckBusy)return;
- const results=Array.from(manualCheckRows.querySelectorAll('select'),select=>({
-  id:select.dataset.id,state:select.value
- })).filter(row=>row.state);
+ const state=$('manualCheckState').value;
  const status=$('manualCheckStatus');
- if(action==='confirm'&&!results.length){
-  status.textContent='请至少选择一个窗口的检测结果。';
+ if(action==='confirm'&&!state){
+  status.textContent='请选择要应用到所选窗口的状态。';
   return;
  }
+ const results=manualCheckTargets.map(window=>({id:window.id,state}));
  const controls=manualCheckDialog.querySelectorAll('button,select');
  manualCheckBusy=true;
  controls.forEach(control=>control.disabled=true);
@@ -338,6 +326,7 @@ manualCheckDialog.addEventListener('cancel',event=>{if(manualCheckBusy)event.pre
 $('windowManualCheck').onclick=()=>openManualCheck(
  windows.filter(window=>chosenWindows.has(window.id)).sort((a,b)=>a.seq-b.seq)
 );
+$('manualCheckOpen').onclick=()=>submitManualCheck('open',manualCheckTargets[0].id,manualCheckTargets[0].name);
 $('manualCheckConfirm').onclick=()=>submitManualCheck('confirm');
 showPage(location.hash==='#windows'?'windows':'tasks');
 
