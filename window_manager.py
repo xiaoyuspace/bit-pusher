@@ -378,34 +378,48 @@ def release_management():
 
 def manual_check(body):
     global managed_profiles
-    from worker import bit, publisher
+    from worker import bit, profiles, publisher
 
     pid = body.get('id')
     action = body.get('action')
-    if not isinstance(pid, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', pid):
-        raise ValueError('请选择有效窗口。')
     if action not in ('open', 'confirm'):
         raise ValueError('无效的手动检测操作。')
+    labels = {'pending': '待配置', 'ready': '可使用', 'delete': '待删除'}
+    results = body.get('results', [{'id': pid, 'state': body.get('state')}])
+    if action == 'open':
+        results = [{'id': pid}]
+    elif body.get('confirmed') is not True:
+        raise ValueError('请确认手动检测结果。')
+    if not isinstance(results, list) or not 1 <= len(results) <= 200:
+        raise ValueError('请选择 1–200 个窗口。')
+    ids = set()
+    for row in results:
+        target = row.get('id') if isinstance(row, dict) else None
+        if not isinstance(target, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', target) or target in ids:
+            raise ValueError('请选择有效且不重复的窗口。')
+        if action == 'confirm' and (not isinstance(row.get('state'), str) or row['state'] not in labels):
+            raise ValueError('请选择有效的窗口状态。')
+        ids.add(target)
 
     with publisher.lock:
-        if pid in publisher.reserved_profiles():
-            raise ValueError('该窗口已被发布队列占用。')
+        if ids.intersection(publisher.reserved_profiles()):
+            raise ValueError('所选窗口中有窗口已被发布队列占用。')
         if not operation_lock.acquire(blocking=False):
             raise ValueError('窗口操作正在执行，请稍候。')
-        managed_profiles = {pid}
+        managed_profiles = ids
     try:
         if action == 'open':
             bit('/browser/open', {'id': pid})
             return
-        labels = {'pending': '待配置', 'ready': '可使用', 'delete': '待删除'}
-        status = body.get('state')
-        if not isinstance(status, str) or status not in labels:
-            raise ValueError('请选择有效的窗口状态。')
-        if body.get('confirmed') is not True:
-            raise ValueError('请确认手动检测结果。')
-        if not bit('/browser/detail', {'id': pid}):
-            raise ValueError('窗口不存在，请刷新列表。')
-        mark(pid, status, f'人工检测：已手动标为「{labels[status]}」。')
+        if not ids.issubset(profile['id'] for profile in profiles()):
+            raise ValueError('有窗口已不存在，请刷新列表。')
+        init()
+        checked = time.time()
+        with store.connect() as db:
+            db.executemany('INSERT OR REPLACE INTO windows VALUES(?,?,?,?)', [
+                (row['id'], row['state'], f'人工检测：已手动标为「{labels[row["state"]]}」。', checked)
+                for row in results
+            ])
     finally:
         release_management()
 

@@ -163,7 +163,7 @@ function renderWindows(){
   tr.append(el('td',w.username||'—'),el('td',w.account_password||'—'),el('td',w.twofa||'—'));
   const actions=el('td');actions.dataset.profileId=w.id;for(const [text,mode] of [['配置','configure'],['编辑','edit'],['检测','detect']]){const button=el('button',text,'text-button row-action');button.onclick=()=>{chosenWindows=new Set([w.id]);renderWindows();mode==='detect'?windowAction(mode):openWindowForm(mode)};actions.append(button)}
   const manualCheck=el('button','手动检测','text-button row-action');
-  manualCheck.onclick=()=>openManualCheck(w);
+  manualCheck.onclick=()=>openManualCheck([w]);
   actions.append(manualCheck);
   tr.append(actions);$('windowList').append(tr);
  }
@@ -180,7 +180,7 @@ function renderWindowJob(){
  const selectedBusy = targets.some(w => reserved.has(w.id));
  $('windowSelection').textContent=`已选 ${targets.length} 项`;
  $('windowCreate').disabled=busy;$('windowSubmit').disabled=busy||(windowMode!=='create'&&selectedBusy);
- for(const id of ['windowConfigure','windowDetect'])$(id).disabled=busy||selectedBusy||!targets.length;
+ for(const id of ['windowConfigure','windowDetect','windowManualCheck'])$(id).disabled=busy||selectedBusy||!targets.length;
  $('windowDelete').disabled=busy||selectedBusy||!targets.length||targets.some(w=>w.state!=='delete');
  document.querySelectorAll('.row-action').forEach(button => {
   const reservedWindow = reserved.has(button.closest('[data-profile-id]')?.dataset.profileId);
@@ -278,43 +278,66 @@ async function windowAction(action){
 }
 $('windowCreate').onclick=()=>openWindowForm('create');$('windowConfigure').onclick=()=>openWindowForm('configure');$('windowDetect').onclick=()=>windowAction('detect');$('windowDelete').onclick=()=>windowAction('delete');
 $('windowForm').onsubmit=e=>{e.preventDefault();windowAction(windowMode)};
-let manualCheckTarget=null;
 let manualCheckBusy=false;
-function openManualCheck(window){
- if(manualCheckBusy)return;
- manualCheckTarget=window;
- $('manualCheckState').value=window.state;
- $('manualCheckTarget').textContent=`#${window.seq} · ${window.name||'未命名窗口'}`;
+const manualCheckRows=$('manualCheckRows');
+const manualCheckDialog=$('manualCheckDialog');
+
+function openManualCheck(targets){
+ if(manualCheckBusy||!targets.length)return;
+ manualCheckRows.replaceChildren();
+ for(const window of targets){
+  const name=`#${window.seq} · ${window.name||'未命名窗口'}`;
+  const row=el('div',null,'summary manual-check-row');
+  const label=el('label',name);
+  const state=el('select');
+  state.dataset.id=window.id;
+  state.append(new Option(`保留当前状态（${windowLabels[window.state]}）`,''));
+  for(const [value,text] of Object.entries(windowLabels))state.append(new Option(text,value));
+  if(targets.length===1)state.value=window.state;
+  label.append(state);
+  const open=el('button','打开比特窗口');
+  open.type='button';
+  open.onclick=()=>submitManualCheck('open',window.id,name);
+  row.append(label,open);
+  manualCheckRows.append(row);
+ }
  $('manualCheckStatus').textContent='';
- $('manualCheckDialog').showModal();
+ manualCheckDialog.showModal();
 }
-async function submitManualCheck(action){
- if(!manualCheckTarget||manualCheckBusy)return;
- const target=manualCheckTarget;
- const state=$('manualCheckState').value;
+
+async function submitManualCheck(action,id,name){
+ if(manualCheckBusy)return;
+ const results=Array.from(manualCheckRows.querySelectorAll('select'),select=>({
+  id:select.dataset.id,state:select.value
+ })).filter(row=>row.state);
+ const status=$('manualCheckStatus');
+ if(action==='confirm'&&!results.length){
+  status.textContent='请至少选择一个窗口的检测结果。';
+  return;
+ }
+ const controls=manualCheckDialog.querySelectorAll('button,select');
  manualCheckBusy=true;
- $('manualCheckOpen').disabled=true;
- $('manualCheckState').disabled=true;
- $('manualCheckConfirm').disabled=true;
- $('manualCheckStatus').textContent=action==='open'?'正在打开窗口…':'正在保存…';
+ controls.forEach(control=>control.disabled=true);
+ status.textContent=action==='open'?`正在打开 ${name}…`:'正在保存…';
  try{
-  await api('/api/windows/manual-check',{id:target.id,action,state,confirmed:action==='confirm'});
+  await api('/api/windows/manual-check',{id,action,results,confirmed:action==='confirm'});
   if(action==='open'){
-   $('manualCheckStatus').textContent='窗口已打开。检查后请返回这里确认。';
+   status.textContent=`${name} 已打开。检查后请返回这里选择结果。`;
   }else{
-   $('manualCheckDialog').close();
-   toast(`窗口已手动标为「${windowLabels[state]}」`);
+   manualCheckDialog.close();
+   toast(`已保存 ${results.length} 个窗口的手动检测结果`);
    await loadProfiles();
   }
- }catch(e){$('manualCheckStatus').textContent=e.message}
+ }catch(e){status.textContent=e.message}
  finally{
   manualCheckBusy=false;
-  $('manualCheckOpen').disabled=false;
-  $('manualCheckState').disabled=false;
-  $('manualCheckConfirm').disabled=false;
+  controls.forEach(control=>control.disabled=false);
  }
 }
-$('manualCheckOpen').onclick=()=>submitManualCheck('open');
+manualCheckDialog.addEventListener('cancel',event=>{if(manualCheckBusy)event.preventDefault()});
+$('windowManualCheck').onclick=()=>openManualCheck(
+ windows.filter(window=>chosenWindows.has(window.id)).sort((a,b)=>a.seq-b.seq)
+);
 $('manualCheckConfirm').onclick=()=>submitManualCheck('confirm');
 showPage(location.hash==='#windows'?'windows':'tasks');
 
