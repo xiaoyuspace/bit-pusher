@@ -105,35 +105,129 @@ $('captionDownload').onclick=()=>{
 };
 
 let batchPlan=null;
-function invalidateBatch(){batchPlan=null;$('batchRun').disabled=true;$('batchRows').replaceChildren();$('batchInfo').textContent='';}
-function batchInput(){return {folder:$('batchFolder').value,text_file:$('batchTexts').value,profiles:[...$('batchProfiles').querySelectorAll('input:checked')].map(e=>e.value)}}
+let batchGenerated='';
+function setBatchSave(enabled){
+ for(const id of ['batchRun','batchDraft'])$(id).disabled=!enabled;
+}
+function invalidateBatch(){batchPlan=null;setBatchSave(false);$('batchRows').replaceChildren();$('batchInfo').textContent='';}
+function batchInput(){return {folder:$('batchFolder').value,text_file:$('batchTexts').value,generated:batchGenerated,profiles:[...$('batchProfiles').querySelectorAll('input:checked')].map(e=>e.value)}}
 $('batchNew').onclick=()=>{invalidateBatch();$('batchProfiles').replaceChildren();for(const w of windows.filter(w=>w.state==='ready').sort((a,b)=>a.seq-b.seq)){const label=el('label'),input=el('input');input.type='checkbox';input.value=w.id;input.onchange=invalidateBatch;label.append(input,document.createTextNode(' #'+w.seq+' · '+w.name));$('batchProfiles').append(label)}$('batchSelectAll').checked=false;$('batchDialog').showModal()};
 $('batchClose').onclick=()=>$('batchDialog').close();
 $('batchSelectAll').onchange=()=>{for(const e of $('batchProfiles').querySelectorAll('input'))e.checked=$('batchSelectAll').checked;invalidateBatch()};
 async function pickBatchPath(kind, input){
  if($('batchPreview').disabled)return;
  $('batchPreview').disabled=true;
- $('batchRun').disabled=true;
+ setBatchSave(false);
  $('pickBatchFolder').disabled=true;
  $('pickBatchTexts').disabled=true;
  try{
   const {path}=await api('/api/batch/pick',{kind});
-  if(path&&path!==$(input).value){
+  if(path&&(path!==$(input).value||(kind==='text_file'&&batchGenerated))){
+   if(kind==='text_file'){batchGenerated='';$('batchCaptionStatus').textContent='';}
    $(input).value=path;
    invalidateBatch();
   }
  }catch(e){toast(e.message)}
  finally{
   $('batchPreview').disabled=false;
-  $('batchRun').disabled=!batchPlan;
+  setBatchSave(!!batchPlan);
   $('pickBatchFolder').disabled=false;
   $('pickBatchTexts').disabled=false;
  }
 }
 $('pickBatchFolder').onclick=()=>pickBatchPath('folder','batchFolder');
 $('pickBatchTexts').onclick=()=>pickBatchPath('text_file','batchTexts');
-$('batchPreview').onclick=async()=>{invalidateBatch();$('batchPreview').disabled=true;try{batchPlan=await api('/api/batch/preview',batchInput());const table=el('table');for(const r of batchPlan.rows){const tr=el('tr');tr.append(el('td',r.order),el('td','#'+r.seq+' · '+r.profile_name),el('td',r.video.split(/[\\/]/).pop()),el('td',r.text.slice(0,130)));table.append(tr)}$('batchRows').append(table);$('batchInfo').textContent=batchPlan.rows.length+' 组配对完成。失败素材复制到：'+batchPlan.failure_folder;$('batchRun').disabled=false}catch(e){toast(e.message)}finally{$('batchPreview').disabled=false}};
-$('batchRun').onclick=async()=>{if(!batchPlan)return;$('batchRun').disabled=true;$('batchPreview').disabled=true;try{const result=await api('/api/batch/create',{...batchInput(),signature:batchPlan.signature});$('batchDialog').close();toast('已创建并开始执行 '+result.ids.length+' 条任务');invalidateBatch();await refresh()}catch(e){toast(e.message);invalidateBatch()}finally{$('batchPreview').disabled=false}};
+$('batchGenerate').onclick=()=>{
+ const count=batchInput().profiles.length;
+ try{
+  if(count<1||count>200)throw Error('请选择 1–200 个窗口后生成。');
+  const generated=generateCaptions($('batchTemplate').value,count);
+  if(new Blob([generated]).size>5000000)throw Error('生成文案超过 5 MB。');
+  batchGenerated=generated;
+  $('batchTexts').value='';
+  invalidateBatch();
+  $('batchCaptionStatus').textContent=`已生成 ${count} 条文案，将用于本批预览。`;
+ }catch(error){$('batchCaptionStatus').textContent=error.message}
+};
+$('batchTemplate').oninput=()=>{
+ if(batchGenerated){batchGenerated='';invalidateBatch()}
+ $('batchCaptionStatus').textContent='';
+};
+function renderBatchRows(){
+ const table=el('table');
+ const header=el('tr');
+ for(const text of ['视频','窗口','文案','操作'])header.append(el('th',text));
+ table.append(header);
+ for(const row of batchPlan.rows){
+  const tr=el('tr');
+  tr.dataset.order=row.order;
+  const windowCell=el('td'), textCell=el('td'), actions=el('td');
+  const select=el('select');
+  select.setAttribute('aria-label',`第 ${row.order} 行窗口`);
+  for(const w of windows.filter(w=>w.state==='ready').sort((a,b)=>a.seq-b.seq)){
+   select.append(new Option(`#${w.seq} · ${w.name}`,w.id));
+  }
+  select.value=row.profile_id;
+  const caption=el('textarea');
+  caption.value=row.text;
+  caption.rows=3;
+  caption.setAttribute('aria-label',`第 ${row.order} 行文案`);
+  const remove=el('button','移除');
+  remove.onclick=()=>{
+   tr.remove();
+   const count=table.querySelectorAll('[data-order]').length;
+   $('batchInfo').textContent=`剩余 ${count} 条任务`;
+   setBatchSave(count>0);
+  };
+  windowCell.append(select);textCell.append(caption);actions.append(remove);
+  tr.append(el('td',row.video.split(/[\\/]/).pop()),windowCell,textCell,actions);
+  table.append(tr);
+ }
+ $('batchRows').replaceChildren(table);
+ $('batchInfo').textContent=`${batchPlan.rows.length} 条任务，可在表中调整配对。`;
+}
+$('batchPreview').onclick=async()=>{
+ invalidateBatch();
+ $('batchPreview').disabled=true;
+ $('batchGenerate').disabled=true;
+ const input=batchInput();
+ try{
+  const prepared=await api('/api/batch/preview',input);
+  if(JSON.stringify(input)!==JSON.stringify(batchInput()))return;
+  batchPlan={...prepared,input};
+  renderBatchRows();
+  setBatchSave(true);
+ }catch(error){toast(error.message)}
+ finally{$('batchPreview').disabled=false;$('batchGenerate').disabled=false}
+};
+async function saveBatch(run){
+ if(!batchPlan||$('batchPreview').disabled)return;
+ if(model?.editable_batch!==true){
+  $('batchInfo').textContent='请关闭旧版服务，重新运行 start.cmd 后刷新页面。';
+  return;
+ }
+ const edits=[...$('batchRows').querySelectorAll('[data-order]')].map(row=>({
+  order:Number(row.dataset.order),profile_id:row.querySelector('select').value,
+  text:row.querySelector('textarea').value
+ }));
+ setBatchSave(false);
+ $('batchPreview').disabled=true;
+ try{
+  const result=await api('/api/batch/create',{...batchPlan.input,signature:batchPlan.signature,edits,run});
+  $('batchDialog').close();
+  toast(result.started?`已创建并开始执行 ${result.ids.length} 条任务`:
+   `已保存 ${result.ids.length} 条草稿`+(result.warning?`。未启动：${result.warning}`:''));
+  invalidateBatch();
+  await refresh();
+ }catch(error){$('batchInfo').textContent=error.message}
+ finally{
+  $('batchPreview').disabled=false;
+  setBatchSave(!!batchPlan&&!!$('batchRows').querySelector('[data-order]'));
+ }
+}
+$('batchDraft').onclick=()=>saveBatch(false);
+$('batchRun').onclick=()=>saveBatch(true);
+
 
 
 const windowLabels={pending:'待配置',ready:'可使用',delete:'待删除'};

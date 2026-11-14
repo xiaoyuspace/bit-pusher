@@ -81,7 +81,7 @@ class Handler(BaseHTTPRequestHandler):
                 activity = publisher.activity
                 closing_tasks = publisher.closing_task_ids()
                 reserved_profiles = sorted(publisher.reserved_profiles())
-            return self.send({'version':VERSION,'batch_manual_check':True,
+            return self.send({'version':VERSION,'batch_manual_check':True,'editable_batch':True,
                               'pid':os.getpid(),'token':TOKEN,'tasks':store.tasks(),
                               'running':running,'current':current,'activity':activity,
                               'closing_tasks':closing_tasks,'reserved_profiles':reserved_profiles,'window_job':wm.job,
@@ -103,6 +103,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             size = int(self.headers.get('Content-Length',0))
             limit = 1_000_000 if self.path == '/api/windows/credentials/import' else 200_000
+            if self.path in ('/api/batch/preview','/api/batch/create'):
+                limit = 12_000_000
             if not 0 <= size <= limit:
                 raise ValueError('请求过大。')
             body = json.loads(self.rfile.read(size) or b'{}')
@@ -130,15 +132,27 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == '/api/batch/pick':
                 return self.send({'path':pick_batch_path(body.get('kind'))})
             if self.path in ('/api/batch/preview','/api/batch/create'):
-                wm.require_ready(body.get('profiles'))
-                prepared = batch.plan(body.get('folder'),body.get('text_file'),body.get('profiles'),profiles())
+                available = profiles()
+                prepared = batch.plan(body.get('folder'),body.get('text_file'),body.get('profiles'),
+                                      available,body.get('generated',''))
                 if self.path == '/api/batch/preview':
+                    wm.require_ready(body.get('profiles'))
                     return self.send(prepared)
                 if body.get('signature') != prepared['signature']:
                     raise ValueError('素材或窗口信息已变化，请重新预览。')
-                ids = batch.create(prepared)
-                publisher.run(ids)
-                return self.send({'ids':ids,'failure_folder':prepared['failure_folder']})
+                rows = batch.apply_edits(prepared, body.get('edits'), available)
+                wm.require_ready([row['profile_id'] for row in rows])
+                ids = batch.create(rows)
+                started = body.get('run', True) is True
+                warning = ''
+                if started:
+                    try:
+                        publisher.run(ids)
+                    except ValueError as e:
+                        started = False
+                        warning = str(e)
+                return self.send({'ids':ids,'started':started,'warning':warning,
+                                  'failure_folder':prepared['failure_folder']})
             if self.path == '/api/task':
                 wm.require_ready([body.get('profile_id')])
                 return self.send({'id':store.create_task(body)})
