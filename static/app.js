@@ -96,7 +96,7 @@ function generateBookCaptions(rawLink,count){
   const books=titles.map(([roles,hooks])=>`《${choose(roles)}${choose(hooks)}》作者：${choose(surnames)}${choose(names)}`).join('\n');
   if(seen.has(books))continue;
   seen.add(books);
-  captions.push(`po文+po18+废文+AO3】合集\n🔗：${link}\n${books} #po文合集 #po文`);
+  captions.push(`po文+po18+废文+AO3】合集万本连载🔥\n🔗：${link}\n${books} #po文合集 #po文`);
  }
  return captions.join('\n===\n');
 }
