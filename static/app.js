@@ -177,7 +177,7 @@ async function pickBatchPath(kind, input){
    $(input).value=path;
    invalidateBatch();
   }
- }catch(e){toast(e.message)}
+ }catch(e){$('batchInfo').textContent=e.message}
  finally{
   $('batchPreview').disabled=false;
   setBatchSave(!!batchPlan);
@@ -239,16 +239,37 @@ function renderBatchRows(){
 }
 $('batchPreview').onclick=async()=>{
  invalidateBatch();
+ const input=batchInput();
+ const status=$('batchInfo');
+ if(input.text_only&&model?.text_only_batch!==true){
+  status.textContent='当前服务不支持仅文案批量发布，请重新运行 start.cmd 后刷新页面。';
+  return;
+ }
+ if(!input.profiles.length){
+  status.textContent='请先勾选至少一个可使用窗口。';
+  return;
+ }
+ if(!input.generated&&!input.text_file){
+  status.textContent='请选择文案 TXT 文件，或在仅文案模式直接粘贴文案。';
+  return;
+ }
+ if(!input.text_only&&!input.folder){
+  status.textContent='请选择视频文件夹。';
+  return;
+ }
+ status.textContent='正在检查数量并生成配对…';
  $('batchPreview').disabled=true;
  $('batchGenerate').disabled=true;
- const input=batchInput();
  try{
   const prepared=await api('/api/batch/preview',input);
   if(JSON.stringify(input)!==JSON.stringify(batchInput()))return;
   batchPlan={...prepared,input};
   renderBatchRows();
   setBatchSave(true);
- }catch(error){toast(error.message)}
+ }catch(error){
+  invalidateBatch();
+  status.textContent=error.message;
+ }
  finally{$('batchPreview').disabled=false;$('batchGenerate').disabled=false}
 };
 async function saveBatch(run){
