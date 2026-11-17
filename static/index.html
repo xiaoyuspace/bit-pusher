@@ -6,7 +6,9 @@
 <dialog id="captionDialog">
 <form id="captionForm">
 <div class="dialog-head"><h2>生成批量文案</h2><button type="button" id="captionClose" aria-label="关闭">×</button></div>
-<label>原始文案<textarea id="captionTemplate" rows="6" required placeholder="粘贴包含 📷345987📷 的文案"></textarea></label>
+<label>文案类型<select id="captionMode"><option value="code">六位数字替换</option><option value="books">po 文书单</option></select></label>
+<label id="captionTemplateField">原始文案<textarea id="captionTemplate" rows="6" required placeholder="粘贴包含 📷345987📷 的文案"></textarea></label>
+<label id="captionLinkField" hidden>合集链接<input id="captionLink" type="url" placeholder="https://…" disabled></label>
 <label>生成数量（1–200 条）<input id="captionCount" type="number" min="1" max="200" step="1" value="10" required></label>
 <p class="hint">只替换两个 📷 之间的六位数字，同一次生成的数字互不重复。</p>
 <button type="submit" class="primary">生成文案</button>

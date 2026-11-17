@@ -72,6 +72,43 @@ function generateCaptions(template, count){
  return captions.join('\n===\n');
 }
 
+function generateBookCaptions(rawLink,count){
+ const link=rawLink.trim();
+ let url;
+ try{url=new URL(link)}catch{throw Error('请输入有效的合集链接。')}
+ if(!/^https?:\/\/[^\s]+$/i.test(link)||!url.hostname||url.username||url.password){
+  throw Error('请输入有效的 HTTP 或 HTTPS 合集链接。');
+ }
+ if(!Number.isInteger(count)||count<1||count>200)throw Error('请输入 1–200 条。');
+ const titles=[
+  [['金主','合约对象','联姻对象','前任','室友'],['不肯签字','把续约写成了情书','今天也在假装不熟','把钥匙留给了我','在散场后等我']],
+  [['队长','替补','前队友','解说','榜一'],['请关掉你的麦','把告白发进了战队群','在决赛之后敲门','把双排留给了我','偷偷改了情侣名']],
+  [['世子','少将军','小侯爷','剑客','掌门'],['不肯退婚','把婚书藏进了剑匣','今夜没有回府','在雪夜等一封信','把玉佩留在了渡口']],
+  [['邻居','学长','竹马','店长','同桌'],['把我写进了情书','在末班车上等我','把秘密留在旧书里','在雨停前说喜欢','总来借同一本书']],
+  [['演员','摄影师','主唱','编剧','电台主播'],['把告白剪进了预告','在谢幕时叫我的名字','给我留了一盏灯','只为我改了结局','在凌晨点了我的歌']]
+ ];
+ const surnames=['迟','白','折','闻','江','温','沈','顾','许','季','宋','林'];
+ const names=['雾','栖','灯','雪迟','停舟','照野','南枝','晚棠','小满','听雨','青禾','知遥'];
+ const choose=list=>list[Math.floor(Math.random()*list.length)];
+ const seen=new Set();
+ const captions=[];
+ while(captions.length<count){
+  const books=titles.map(([roles,hooks])=>`《${choose(roles)}${choose(hooks)}》作者：${choose(surnames)}${choose(names)}`).join('\n');
+  if(seen.has(books))continue;
+  seen.add(books);
+  captions.push(`po文+po18+废文+AO3】合集\n🔗：${link}\n${books} #po文合集 #po文`);
+ }
+ return captions.join('\n===\n');
+}
+
+$('captionMode').onchange=()=>{
+ const books=$('captionMode').value==='books';
+ $('captionTemplateField').hidden=books;
+ $('captionTemplate').disabled=books;
+ $('captionLinkField').hidden=!books;
+ $('captionLink').disabled=!books;
+ $('captionLink').required=books;
+};
 $('captionOpen').onclick=()=>$('captionDialog').showModal();
 $('captionClose').onclick=()=>$('captionDialog').close();
 $('captionForm').oninput=()=>{
@@ -83,7 +120,9 @@ $('captionForm').onsubmit=e=>{
  e.preventDefault();
  try{
   const count=$('captionCount').valueAsNumber;
-  const result=generateCaptions($('captionTemplate').value,count);
+  const result=$('captionMode').value==='books'
+   ?generateBookCaptions($('captionLink').value,count)
+   :generateCaptions($('captionTemplate').value,count);
   if(new Blob([result]).size>5000000)throw Error('生成的 TXT 超过批量导入的 5 MB 上限，请减少条数。');
   $('captionOutput').value=result;
   $('captionStatus').textContent=`已生成 ${count} 条文案。`;
