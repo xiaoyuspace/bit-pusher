@@ -110,7 +110,18 @@ function setBatchSave(enabled){
  for(const id of ['batchRun','batchDraft'])$(id).disabled=!enabled;
 }
 function invalidateBatch(){batchPlan=null;setBatchSave(false);$('batchRows').replaceChildren();$('batchInfo').textContent='';}
-function batchInput(){return {folder:$('batchFolder').value,text_file:$('batchTexts').value,generated:batchGenerated,profiles:[...$('batchProfiles').querySelectorAll('input:checked')].map(e=>e.value)}}
+function batchInput(){return {folder:$('batchFolder').value,text_file:$('batchTexts').value,text_only:$('batchMode').value==='text',generated:$('batchMode').value==='text'&&$('batchPastedText').value.trim()||batchGenerated,profiles:[...$('batchProfiles').querySelectorAll('input:checked')].map(e=>e.value)}}
+$('batchMode').onchange=()=>{
+ const textOnly=$('batchMode').value==='text';
+ $('batchVideoPicker').hidden=textOnly;
+ $('batchTextOnly').hidden=!textOnly;
+ invalidateBatch();
+};
+$('batchPastedText').oninput=()=>{
+ batchGenerated='';
+ $('batchCaptionStatus').textContent='';
+ invalidateBatch();
+};
 $('batchNew').onclick=()=>{invalidateBatch();$('batchProfiles').replaceChildren();for(const w of windows.filter(w=>w.state==='ready').sort((a,b)=>a.seq-b.seq)){const label=el('label'),input=el('input');input.type='checkbox';input.value=w.id;input.onchange=invalidateBatch;label.append(input,document.createTextNode(' #'+w.seq+' · '+w.name));$('batchProfiles').append(label)}$('batchSelectAll').checked=false;$('batchDialog').showModal()};
 $('batchClose').onclick=()=>$('batchDialog').close();
 $('batchSelectAll').onchange=()=>{for(const e of $('batchProfiles').querySelectorAll('input'))e.checked=$('batchSelectAll').checked;invalidateBatch()};
@@ -122,8 +133,8 @@ async function pickBatchPath(kind, input){
  $('pickBatchTexts').disabled=true;
  try{
   const {path}=await api('/api/batch/pick',{kind});
-  if(path&&(path!==$(input).value||(kind==='text_file'&&batchGenerated))){
-   if(kind==='text_file'){batchGenerated='';$('batchCaptionStatus').textContent='';}
+  if(path&&(path!==$(input).value||(kind==='text_file'&&(batchGenerated||$('batchPastedText').value)))){
+   if(kind==='text_file'){batchGenerated='';$('batchPastedText').value='';$('batchCaptionStatus').textContent='';}
    $(input).value=path;
    invalidateBatch();
   }
@@ -144,6 +155,7 @@ $('batchGenerate').onclick=()=>{
   const generated=generateCaptions($('batchTemplate').value,count);
   if(new Blob([generated]).size>5000000)throw Error('生成文案超过 5 MB。');
   batchGenerated=generated;
+  $('batchPastedText').value='';
   $('batchTexts').value='';
   invalidateBatch();
   $('batchCaptionStatus').textContent=`已生成 ${count} 条文案，将用于本批预览。`;
@@ -180,7 +192,7 @@ function renderBatchRows(){
    setBatchSave(count>0);
   };
   windowCell.append(select);textCell.append(caption);actions.append(remove);
-  tr.append(el('td',row.video.split(/[\\/]/).pop()),windowCell,textCell,actions);
+  tr.append(el('td',row.video ? row.video.split(/[\\/]/).pop() : '仅文案'),windowCell,textCell,actions);
   table.append(tr);
  }
  $('batchRows').replaceChildren(table);
@@ -202,7 +214,7 @@ $('batchPreview').onclick=async()=>{
 };
 async function saveBatch(run){
  if(!batchPlan||$('batchPreview').disabled)return;
- if(model?.editable_batch!==true){
+ if(model?.editable_batch!==true||(batchPlan.input.text_only&&model?.text_only_batch!==true)){
   $('batchInfo').textContent='请关闭旧版服务，重新运行 start.cmd 后刷新页面。';
   return;
  }

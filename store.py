@@ -69,6 +69,8 @@ def failed_archive(task_id):
 
 
 def archived_video(task):
+    if not task['video']:
+        return None
     try:
         path = failed_archive(task['id']) / Path(task['video']).name
         return path if path.resolve() == path and path.is_file() else None
@@ -110,7 +112,8 @@ def create_task(data, db=None):
     profile = str(data.get('profile_id', ''))
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', profile):
         raise ValueError('请选择浏览器窗口。')
-    video, digest = file_hash(str(data.get('video', '')).strip().strip('"'))
+    source = str(data.get('video', '')).strip().strip('"')
+    video, digest = file_hash(source) if source else ('', '')
     fp = fingerprint(profile, text, digest)
     task_id, now = uuid.uuid4().hex, time.time()
     with (connect() if db is None else nullcontext(db)) as db:
@@ -221,6 +224,8 @@ def archive_failed(task_id):
         (target / '文案.txt').write_text(task['text'], encoding='utf-8-sig')
         (target / '失败原因.txt').write_text(task['profile_name'] + '\n' + task['message'], encoding='utf-8-sig')
         (target / '任务.json').write_text(json.dumps(task, ensure_ascii=False, indent=2), encoding='utf-8')
+        if not task['video']:
+            return
         source = Path(task['video'])
         destination = target / source.name
         if source.is_file() and (not destination.exists() or destination.stat().st_size != source.stat().st_size):

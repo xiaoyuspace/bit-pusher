@@ -61,7 +61,7 @@ def profiles():
     raise RuntimeError('窗口分页超出限制。')
 
 
-def post_result(payload, expected_text):
+def post_result(payload, expected_text, expect_video=True):
     """Only trust the newly created tweet result, never an arbitrary timeline ID."""
     try:
         result = payload['data']['create_tweet']['tweet_results']['result']
@@ -76,7 +76,7 @@ def post_result(payload, expected_text):
         if not actual or actual[:min(30,len(expected_text))] != expected_text[:30]:
             return None
         media = (legacy.get('extended_entities') or {}).get('media', [])
-        if not any(m.get('type') in ('video','animated_gif') for m in media):
+        if expect_video and not any(m.get('type') in ('video','animated_gif') for m in media):
             return None
         return f'https://x.com/i/status/{tweet_id}'
     except (KeyError, TypeError, AttributeError):
@@ -443,9 +443,11 @@ class Publisher:
             set_stage('检查视频文件')
             import window_manager as wm
             wm.require_ready([task['profile_id']])
-            path, digest = store.file_hash(task['video'])
-            if digest != task['file_hash']:
-                raise ValueError('视频文件在创建任务后发生变化，请重新创建任务。')
+            path = None
+            if task['video']:
+                path, digest = store.file_hash(task['video'])
+                if digest != task['file_hash']:
+                    raise ValueError('视频文件在创建任务后发生变化，请重新创建任务。')
             from playwright.sync_api import sync_playwright
             with sync_playwright() as p:
                 set_stage('打开比特浏览器窗口')
@@ -489,60 +491,67 @@ class Publisher:
                 set_stage('填写文案')
                 editor.fill(task['text'])
                 self.checkpoint()
-                set_stage('定位视频上传入口')
-                upload = composer.locator('input[type="file"][accept*="video"]')
-                if upload.count() != 1:
-                    raise ValueError('未找到唯一的视频上传入口，请检查页面。')
-                if prepare_only:
+                button = composer.get_by_test_id('tweetButton')
+                if path:
+                    set_stage('定位视频上传入口')
+                    upload = composer.locator('input[type="file"][accept*="video"]')
+                    if upload.count() != 1:
+                        raise ValueError('未找到唯一的视频上传入口，请检查页面。')
+                    if prepare_only:
+                        editor.fill('')
+                        page.close()
+                        store.update(tid,'draft','准备检查通过：窗口、发帖框和上传入口正常，未上传或发布。')
+                        return
+                    set_stage('上传视频文件')
+                    store.update(tid,'uploading','窗口已打开，正在上传视频，最多等待 20 分钟。')
+                    upload.set_input_files(path, timeout=120000)
+                    set_stage('等待 X 完成上传')
+                    deadline = time.monotonic() + 1200
+                    ready_since = None
+                    while time.monotonic() < deadline:
+                        self.checkpoint()
+                        check_access(page)
+                        if not handle_known_prompts(page):
+                            check_unknown_prompt(page)
+                        if urlparse(page.url).hostname not in ('x.com','www.x.com','twitter.com','www.twitter.com'):
+                            raise ValueError('页面离开 X，任务停止。')
+                        alerts = page.get_by_role('alert').all_text_contents()
+                        if any(re.search(r'failed|error|not supported|too large|失败|不支持|超过|出错', a, re.I) for a in alerts):
+                            raise ValueError('页面提示上传/发帖错误，请在窗口中查看。')
+                        # Media preview alone is insufficient: processing/progress must finish and Post must enable.
+                        preview = composer.locator('[data-testid="attachments"] video, [data-testid="videoPlayer"] video').count() > 0
+                        attachments = composer.get_by_test_id('attachments')
+                        statuses = attachments.get_by_role('status').all_text_contents()
+                        status_texts = statuses or attachments.all_text_contents()
+                        for status in status_texts:
+                            error = ATTACHMENT_ERROR.search(status.strip())
+                            if error:
+                                reason = error.group().lstrip(':：').strip()
+                                raise ValueError(f'X 的视频附件报错（{reason}），未提交帖子。')
+                        uploaded = any(ATTACHMENT_READY.search(status.strip()) for status in status_texts)
+                        processing = composer.get_by_text(re.compile(r'^(Uploading|Processing|正在上传|正在处理|处理中|上传中)(?:[ .…0-9%]*)$', re.I)).count() > 0
+                        ready = preview and uploaded and not processing and button.count()==1 and button.is_enabled()
+                        if ready:
+                            set_stage('确认视频就绪')
+                        elif processing or uploaded:
+                            set_stage('等待 X 处理附件')
+                        else:
+                            set_stage('等待 X 完成上传')
+                        if ready:
+                            ready_since = ready_since or time.monotonic()
+                            if time.monotonic() - ready_since >= 5:
+                                break
+                        else:
+                            ready_since = None
+                        page.wait_for_timeout(1000)
+                    else:
+                        raise TimeoutError('20 分钟内未确认视频处理完成；未点击发布。')
+                    self.checkpoint()
+                elif prepare_only:
                     editor.fill('')
                     page.close()
-                    store.update(tid,'draft','准备检查通过：窗口、发帖框和上传入口正常，未上传或发布。')
+                    store.update(tid, 'draft', '准备检查通过：窗口与发帖框正常，未发布。')
                     return
-                set_stage('上传视频文件')
-                store.update(tid,'uploading','窗口已打开，正在上传视频，最多等待 20 分钟。')
-                upload.set_input_files(path, timeout=120000)
-                set_stage('等待 X 完成上传')
-                button = composer.get_by_test_id('tweetButton')
-                deadline = time.monotonic() + 1200
-                ready_since = None
-                while time.monotonic() < deadline:
-                    self.checkpoint()
-                    check_access(page)
-                    if not handle_known_prompts(page):
-                        check_unknown_prompt(page)
-                    if urlparse(page.url).hostname not in ('x.com','www.x.com','twitter.com','www.twitter.com'):
-                        raise ValueError('页面离开 X，任务停止。')
-                    alerts = page.get_by_role('alert').all_text_contents()
-                    if any(re.search(r'failed|error|not supported|too large|失败|不支持|超过|出错', a, re.I) for a in alerts):
-                        raise ValueError('页面提示上传/发帖错误，请在窗口中查看。')
-                    # Media preview alone is insufficient: processing/progress must finish and Post must enable.
-                    preview = composer.locator('[data-testid="attachments"] video, [data-testid="videoPlayer"] video').count() > 0
-                    attachments = composer.get_by_test_id('attachments')
-                    statuses = attachments.get_by_role('status').all_text_contents()
-                    status_texts = statuses or attachments.all_text_contents()
-                    for status in status_texts:
-                        error = ATTACHMENT_ERROR.search(status.strip())
-                        if error:
-                            reason = error.group().lstrip(':：').strip()
-                            raise ValueError(f'X 的视频附件报错（{reason}），未提交帖子。')
-                    uploaded = any(ATTACHMENT_READY.search(status.strip()) for status in status_texts)
-                    processing = composer.get_by_text(re.compile(r'^(Uploading|Processing|正在上传|正在处理|处理中|上传中)(?:[ .…0-9%]*)$', re.I)).count() > 0
-                    ready = preview and uploaded and not processing and button.count()==1 and button.is_enabled()
-                    if ready:
-                        set_stage('确认视频就绪')
-                    elif processing or uploaded:
-                        set_stage('等待 X 处理附件')
-                    else:
-                        set_stage('等待 X 完成上传')
-                    if ready:
-                        ready_since = ready_since or time.monotonic()
-                        if time.monotonic() - ready_since >= 5:
-                            break
-                    else:
-                        ready_since = None
-                    page.wait_for_timeout(1000)
-                else:
-                    raise TimeoutError('20 分钟内未确认视频处理完成；未点击发布。')
                 self.checkpoint()
                 # Recheck exact content just before committing the irreversible action.
                 if editor.inner_text().strip() != task['text']:
@@ -554,7 +563,7 @@ class Publisher:
                     try:
                         payload = response.json()
                         if response.ok:
-                            result['url'] = post_result(payload,task['text'])
+                            result['url'] = post_result(payload,task['text'],bool(path))
                         result['rejected'] = rejection_reason(payload)
                     except Exception:
                         pass
@@ -573,7 +582,7 @@ class Publisher:
                 if not button.evaluate('(e) => e === document.activeElement || e.contains(document.activeElement)'):
                     raise AutoPublishBlocked('发布按钮未获得键盘焦点。')
                 self.checkpoint()
-                store.update(tid,'submitting','视频就绪，正在提交。结果不明确时不会自动重发。')
+                store.update(tid,'submitting','正在提交。结果不明确时不会自动重发。')
                 submitted = True  # Durable marker precedes click; crashes cannot trigger a duplicate retry.
                 set_stage('点击发布并等待结果')
                 button.press('Enter', timeout=15000)

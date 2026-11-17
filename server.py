@@ -81,7 +81,7 @@ class Handler(BaseHTTPRequestHandler):
                 activity = publisher.activity
                 closing_tasks = publisher.closing_task_ids()
                 reserved_profiles = sorted(publisher.reserved_profiles())
-            return self.send({'version':VERSION,'batch_manual_check':True,'editable_batch':True,
+            return self.send({'version':VERSION,'batch_manual_check':True,'editable_batch':True,'text_only_batch':True,
                               'pid':os.getpid(),'token':TOKEN,'tasks':store.tasks(),
                               'running':running,'current':current,'activity':activity,
                               'closing_tasks':closing_tasks,'reserved_profiles':reserved_profiles,'window_job':wm.job,
@@ -134,7 +134,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path in ('/api/batch/preview','/api/batch/create'):
                 available = profiles()
                 prepared = batch.plan(body.get('folder'),body.get('text_file'),body.get('profiles'),
-                                      available,body.get('generated',''))
+                                      available,body.get('generated',''),body.get('text_only') is True)
                 if self.path == '/api/batch/preview':
                     wm.require_ready(body.get('profiles'))
                     return self.send(prepared)
