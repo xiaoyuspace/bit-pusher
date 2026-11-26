@@ -175,7 +175,7 @@ def upload_cover(page, path, data, checkpoint):
         try:
             finish = editor.locator('.cover-editor-button .submit:not(.submit-disabled)')
             finish.click()
-            sync_prompt = page.locator('.sync-confirm-content:visible')
+            sync_prompt = page.locator('.videoup-confirm-modal:visible').filter(has=page.locator('.sync-confirm-content'))
             deadline = time.monotonic() + 180
             uploaded_paths = set()
             while True:
@@ -194,7 +194,7 @@ def upload_cover(page, path, data, checkpoint):
                 if time.monotonic() >= deadline:
                     raise ValueError(f'等待 B 站保存封面「{path.name}」超时。')
                 if sync_prompt.is_visible():
-                    page.get_by_text(re.compile(r'^(确认同步|確認同步)$')).click()
+                    sync_prompt.locator('button, .bcc-button').filter(has_text=re.compile(r'^\s*(确认同步|確認同步)\s*$')).click()
                     sync_prompt.wait_for(state='hidden')
                     finish.click()
                 page.wait_for_timeout(250)
@@ -259,19 +259,61 @@ def fill_submission_fields(page, task):
         for existing in labels.all_text_contents():
             if existing not in tags:
                 group.locator('.label-item-v2-container').filter(has_text=re.compile('^' + re.escape(existing) + '$')).click()
-                expect(group.get_by_text(existing, exact=True)).to_have_count(0)
+                expect(labels.filter(has_text=re.compile('^' + re.escape(existing) + '$'))).to_have_count(0, timeout=15000)
         for tag in tags:
             if tag not in labels.all_text_contents():
                 tag_input = group.locator('input')
                 tag_input.fill(tag)
                 tag_input.press('Enter')
-                expect(group.get_by_text(tag, exact=True)).to_be_visible()
+                expect(labels.filter(has_text=re.compile('^' + re.escape(tag) + '$'))).to_be_visible(timeout=15000)
         if sorted(labels.all_text_contents()) != sorted(tags):
             raise ValueError('页面标签与整批配置不一致，请检查该窗口。')
         field = '标题'
         expect(title).to_have_value(task['text'])
     except (Error, AssertionError) as exc:
         raise ValueError(f'无法填写或核实「{field}」，请检查该窗口的投稿页和整批配置。') from exc
+
+
+class SubmissionRejected(ValueError):
+    pass
+
+
+def submit_video(page, submit):
+    with page.expect_response(is_submission, timeout=60000) as received:
+        submit.click()
+    payload = received.value.json()
+    if payload.get('code') != 0:
+        message = 'B 站返回：' + str(payload.get('message') or '投稿未确认')[:150]
+        if type(payload.get('code')) is int:
+            raise SubmissionRejected(message)
+        raise ValueError(message)
+    data = payload.get('data') or {}
+    bvid = str(data.get('bvid') or '')
+    aid = str(data.get('aid') or '')
+    if re.fullmatch(r'BV[A-Za-z0-9]{10}', bvid):
+        video_id = bvid
+    elif aid.isdigit() and int(aid) > 0:
+        video_id = 'av' + aid
+    else:
+        raise ValueError('未收到稿件编号。')
+    return 'https://www.bilibili.com/video/' + video_id
+
+
+def dismiss_upload_notice(page):
+    notice = page.locator('.videoup-notification-dialog:visible')
+    if notice.is_visible():
+        notice.locator('.vp-nd-f').click()
+        notice.wait_for(state='hidden')
+
+
+def upload_row(page, source):
+    rows = page.locator('.file-list:visible .file-item:visible')
+    if rows.count() != 1 or page.locator('.task-list-content-item:visible').count() != 1:
+        raise ValueError('投稿页未显示唯一的视频任务，已停止投稿。')
+    label = rows.locator('.title-text')
+    if label.count() != 1 or label.inner_text().strip() != source.stem:
+        raise ValueError('投稿页的视频文件名与本条任务不一致，已停止投稿。')
+    return rows
 
 
 def publish(publisher, task):
@@ -303,31 +345,39 @@ def publish(publisher, task):
             page.set_default_timeout(15000)
             page.goto(UPLOAD_URL, wait_until='domcontentloaded', timeout=60000)
             page.locator('input[name=buploader]').first.wait_for(state='attached')
-            upload = page.locator('#video-up-app input[type=file][accept*=".mp4"]').first
-            upload.wait_for(state='attached')
+            upload = page.locator('#video-up-app .upload-area:visible').filter(has=page.locator('.upload-btn'))
+            upload.wait_for()
             if page.get_by_text('继续编辑', exact=True).first.is_visible():
                 raise ValueError('该窗口有 B 站未提交的本地草稿，请先处理后重试。')
             store.update(tid, 'uploading', '正在上传至 B 站创作中心。')
             source = Path(path)
             file_input = path
-            if source.stat().st_size <= 8 * 1024 * 1024:
-                file_input = {'name': source.name, 'mimeType': 'video/' + source.suffix[1:],
+            if source.stat().st_size <= 45 * 1024 * 1024:
+                mime = {'.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime'}[source.suffix.lower()]
+                file_input = {'name': source.name, 'mimeType': mime,
                               'buffer': source.read_bytes()}
-            upload.set_input_files(file_input, timeout=120000)
+            dismiss_upload_notice(page)
+            with page.expect_file_chooser() as chooser:
+                upload.click()
+            chooser.value.set_files(file_input, timeout=120000)
             title = page.locator('input[placeholder*="标题"]:visible, .video-title input:visible').first
             deadline = time.monotonic() + 1200
             form_deadline = time.monotonic() + 90
             while not title.is_visible():
                 publisher.checkpoint()
+                dismiss_upload_notice(page)
                 if time.monotonic() >= form_deadline or 'passport.bilibili.com' in page.url:
                     raise ValueError('未进入投稿编辑页，请检查 B 站登录和上传状态。')
                 page.wait_for_timeout(500)
-            if not page.get_by_text(source.stem, exact=True).first.is_visible() and title.input_value() != source.stem:
-                raise ValueError('当前编辑页的视频名称与任务素材不一致，请手动检查。')
-            uploaded = page.get_by_text(re.compile(r'上传完成|上传成功'))
-            while not uploaded.first.is_visible():
+            dismiss_upload_notice(page)
+            file_row = upload_row(page, source)
+            uploaded = file_row.locator('.file-item-content-status-text .success')
+            failure = file_row.locator('.file-item-content-status-text .fail')
+            while not uploaded.is_visible():
                 publisher.checkpoint()
-                if time.monotonic() >= deadline or page.get_by_text('上传失败', exact=True).first.is_visible():
+                if failure.is_visible():
+                    raise ValueError('视频上传失败：' + failure.inner_text().strip()[:120])
+                if time.monotonic() >= deadline:
                     raise ValueError('视频上传未完成，请在窗口中检查。')
                 page.wait_for_timeout(750)
             publisher.checkpoint()
@@ -335,34 +385,22 @@ def publish(publisher, task):
             if cover:
                 store.update(tid, 'uploading', '正在设置并核对 B 站自定义封面。')
                 upload_cover(page, Path(cover['path']), cover_data, publisher.checkpoint)
+            if not upload_row(page, source).locator('.file-item-content-status-text .success').is_visible():
+                raise ValueError('当前视频尚未上传完成，已停止投稿。')
             submit = page.get_by_text('立即投稿', exact=True).first
             submit.click(trial=True)
             publisher.checkpoint()
             store.update(tid, 'submitting', '已准备提交 B 站稿件。')
             submitted = True
-            with page.expect_response(is_submission, timeout=60000) as received:
-                submit.click()
-            payload = received.value.json()
-            if payload.get('code') != 0:
-                if isinstance(payload.get('code'), int):
-                    submitted = False
-                raise ValueError('B 站返回：' + str(payload.get('message') or '投稿未确认')[:150])
-            data = payload.get('data') or {}
-            bvid = str(data.get('bvid') or '')
-            aid = str(data.get('aid') or '')
-            if re.fullmatch(r'BV[A-Za-z0-9]{10}', bvid):
-                video_id = bvid
-            elif aid.isdigit() and int(aid) > 0:
-                video_id = 'av' + aid
-            else:
-                raise ValueError('未收到稿件编号。')
-            url = 'https://www.bilibili.com/video/' + video_id
+            url = submit_video(page, submit)
             store.update(tid, 'success', 'B 站已接收稿件，等待平台审核。', url)
         try:
             close_window_tabs(pid, keep_url=HOME_URL)
             bit('/browser/close', {'id': pid})
         except Exception:
             store.update(tid, 'success', '投稿成功，标签页整理或关窗未完成。', url)
+    except SubmissionRejected as exc:
+        store.update(tid, 'failed', str(exc) + ' 本次未成功投稿。')
     except InterruptedError:
         store.update(tid, 'unknown' if submitted else 'cancelled', '任务已停止，请检查稿件状态。')
     except Exception as exc:
