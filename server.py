@@ -14,14 +14,14 @@ import window_manager as wm
 import window_sync
 from worker import profiles, publisher
 
-VERSION = '2026-11-26-bili-batch-options'
+VERSION = '2026-11-26-bili-cover-folder'
 PORT = 8766
 TOKEN = secrets.token_urlsafe(32)
 PICKER_LOCK = Lock()
 
 
 def pick_batch_path(kind):
-    if kind not in ('folder', 'text_file', 'title_file'):
+    if kind not in ('folder', 'cover_folder', 'text_file', 'title_file'):
         raise ValueError('无效的素材选择类型。')
     if not PICKER_LOCK.acquire(blocking=False):
         raise ValueError('已有选择窗口打开，请先完成或取消。')
@@ -45,8 +45,9 @@ def show_batch_picker(kind):
     try:
         root.withdraw()
         root.attributes('-topmost', True)
-        if kind == 'folder':
-            return filedialog.askdirectory(parent=root, title='选择视频文件夹', mustexist=True)
+        if kind in ('folder', 'cover_folder'):
+            title = '选择封面图片文件夹' if kind == 'cover_folder' else '选择视频文件夹'
+            return filedialog.askdirectory(parent=root, title=title, mustexist=True)
         title = '选择标题 TXT 文件' if kind == 'title_file' else '选择文案 TXT 文件'
         return filedialog.askopenfilename(parent=root, title=title, filetypes=[('TXT 文本文件', '*.txt')])
     finally:
@@ -82,7 +83,7 @@ class Handler(BaseHTTPRequestHandler):
                 activity = publisher.activity
                 closing_tasks = publisher.closing_task_ids()
                 reserved_profiles = sorted(publisher.reserved_profiles())
-            return self.send({'version':VERSION,'batch_manual_check':True,'editable_batch':True,'text_only_batch':True,'bili_batch_options':True,
+            return self.send({'version':VERSION,'batch_manual_check':True,'editable_batch':True,'text_only_batch':True,'bili_batch_options':True,'bili_cover_folder':True,
                               'pid':os.getpid(),'token':TOKEN,'tasks':store.tasks(),
                               'running':running,'current':current,'activity':activity,
                               'closing_tasks':closing_tasks,'reserved_profiles':reserved_profiles,'window_job':wm.job,
@@ -136,7 +137,7 @@ class Handler(BaseHTTPRequestHandler):
                 if self.path.endswith('/preview'):
                     return self.send({'rows': rows, 'signature': signature})
                 if body.get('signature') != signature:
-                    raise ValueError('视频、标题、窗口或投稿配置已变化，请重新预览。')
+                    raise ValueError('视频、封面、标题、窗口或投稿配置已变化，请重新预览。')
                 titles = body.get('titles')
                 if not isinstance(titles, list) or len(titles) != len(rows):
                     raise ValueError('请重新预览标题。')

@@ -12,6 +12,8 @@ from batch import natural_key, read_txt
 
 UPLOAD_URL = 'https://member.bilibili.com/platform/upload/video/frame'
 HOME_URL = 'https://www.bilibili.com/'
+COVER_TYPES = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png'}
+MAX_COVER_BYTES = 20 * 1024 * 1024
 
 
 def checked_title(value):
@@ -35,6 +37,36 @@ def batch_options(body):
     return options
 
 
+def read_cover(path):
+    try:
+        if path.stat().st_size > MAX_COVER_BYTES:
+            raise ValueError(f'封面「{path.name}」超过 20 MB。')
+        with path.open('rb') as source:
+            data = source.read(MAX_COVER_BYTES + 1)
+    except OSError as exc:
+        raise ValueError(f'无法读取封面「{path.name}」，请检查图片路径。') from exc
+    if len(data) > MAX_COVER_BYTES:
+        raise ValueError(f'封面「{path.name}」超过 20 MB。')
+    mime = COVER_TYPES.get(path.suffix.lower())
+    header = b'\x89PNG\r\n\x1a\n' if mime == 'image/png' else b'\xff\xd8\xff'
+    if not mime or not data.startswith(header):
+        raise ValueError(f'封面「{path.name}」不是与扩展名匹配的 JPG 或 PNG 图片。')
+    return data
+
+
+def cover_files(folder, count):
+    if not folder:
+        return [None] * count
+    root = Path(folder)
+    if not root.is_absolute() or not root.is_dir():
+        raise ValueError('请选择存在的封面图片文件夹。')
+    covers = sorted((p for p in root.iterdir() if p.is_file() and p.suffix.lower() in COVER_TYPES),
+                    key=lambda p: (natural_key(p), p.name))
+    if len(covers) != count:
+        raise ValueError(f'有 {count} 个视频、{len(covers)} 张 JPG/PNG 封面，每个视频需要一张封面。')
+    return covers
+
+
 def plan(body, profiles):
     ids = body.get('profiles')
     if not isinstance(ids, list) or not 1 <= len(ids) <= 200 or any(not isinstance(i, str) for i in ids):
@@ -55,6 +87,7 @@ def plan(body, profiles):
         raise ValueError('请选择含有 1–200 个 MP4、MOV 或 WebM 文件的文件夹。')
     if len(files) != len(targets):
         raise ValueError(f'已选 {len(targets)} 个窗口，文件夹有 {len(files)} 个视频。每个窗口需要一个视频，请调整数量。')
+    covers = cover_files(body.get('cover_folder'), len(files))
     options = batch_options(body)
     if body.get('title_file'):
         path = Path(body['title_file'])
@@ -71,11 +104,16 @@ def plan(body, profiles):
     else:
         titles = [p.stem[:80] for p in files]
     rows = []
-    for path, profile, title in zip(files, targets, titles):
+    for path, profile, title, cover in zip(files, targets, titles, covers):
         stat = path.stat()
         if not stat.st_size:
             raise ValueError(f'{path.name} 为空文件。')
-        rows.append(dict(video=str(path.resolve()), filename=path.name, text=title, bili_options=options,
+        row_options = options
+        if cover:
+            row_options = dict(options, cover={'path': str(cover.resolve()),
+                                               'sha256': hashlib.sha256(read_cover(cover)).hexdigest()})
+        rows.append(dict(video=str(path.resolve()), filename=path.name, text=title, bili_options=row_options,
+                         cover_name=cover.name if cover else '',
                          seq=profile['seq'], profile_id=profile['id'], profile_name=profile.get('name') or str(profile['seq']),
                          size=stat.st_size, modified=stat.st_mtime_ns, tags=','.join(tags)))
     signature = hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
@@ -86,6 +124,90 @@ def is_submission(response):
     url = urlsplit(response.url)
     return (response.request.method == 'POST' and url.hostname == 'member.bilibili.com'
             and re.fullmatch(r'/x/(?:(?:v\d+|vu|vupre)/)?web/(?:(?:archives?|article)/)?add(?:/v\d+)?/?', url.path) is not None)
+
+
+def checked_cover_bytes(cover):
+    path = Path(cover['path'])
+    data = read_cover(path)
+    if hashlib.sha256(data).hexdigest() != cover['sha256']:
+        raise ValueError(f'封面「{path.name}」在预览后已被替换，请重新预览并创建任务。')
+    return data
+
+
+def upload_cover(page, path, data, checkpoint):
+    from playwright.sync_api import Error, expect
+
+    image = {'name': path.name, 'mimeType': COVER_TYPES[path.suffix.lower()], 'buffer': data}
+    slot = page.locator('.cover-module-main .cover-slot')
+    editor = page.locator('.cover-editor:visible')
+    responses = []
+
+    def record_upload(response):
+        url = urlsplit(response.url)
+        if (response.request.method == 'POST' and url.hostname == 'member.bilibili.com'
+                and url.path == '/x/vu/web/cover/up'):
+            responses.append(response)
+
+    stage = '打开主封面编辑器'
+    try:
+        slot.click()
+        headings = editor.locator('.cover-editor-panel-canvas-title .text:visible')
+        headings.first.wait_for()
+        stage = '载入封面图片'
+        area = editor.locator('.cover-upload .upload-area')
+        # The domestic editor has two aspect ratios. Each can initially contain a video still.
+        for heading in headings.all():
+            checkpoint()
+            heading.click()
+            before = area.get_attribute('style') or ''
+            with page.expect_file_chooser() as picked:
+                area.click()
+            picked.value.set_files(image)
+            expect(area).to_have_attribute('style', re.compile('blob:'))
+            if before:
+                expect(area).not_to_have_attribute('style', before)
+            panel = editor.locator('.cover-editor-panel-canvas > .active')
+            panel.locator('.cover-editor-panel-canvas-image canvas').first.wait_for(state='attached')
+
+        stage = '保存封面'
+        checkpoint()
+        page.on('response', record_upload)
+        try:
+            finish = editor.locator('.cover-editor-button .submit:not(.submit-disabled)')
+            finish.click()
+            sync_prompt = page.locator('.sync-confirm-content:visible')
+            deadline = time.monotonic() + 180
+            uploaded_paths = set()
+            while True:
+                checkpoint()
+                editing = editor.is_visible()
+                while responses:
+                    response = responses.pop(0)
+                    result = response.json() if response.ok else {}
+                    if result.get('code') != 0:
+                        raise ValueError(f'B 站未接收封面「{path.name}」，请检查图片并重试。')
+                    remote = (result.get('data') or {}).get('url')
+                    if isinstance(remote, str) and urlsplit(remote).path not in ('', '/'):
+                        uploaded_paths.add(urlsplit(remote).path)
+                if not editing:
+                    break
+                if time.monotonic() >= deadline:
+                    raise ValueError(f'等待 B 站保存封面「{path.name}」超时。')
+                if sync_prompt.is_visible():
+                    page.get_by_text(re.compile(r'^(确认同步|確認同步)$')).click()
+                    sync_prompt.wait_for(state='hidden')
+                    finish.click()
+                page.wait_for_timeout(250)
+            stage = '核对已应用的主封面'
+            preview = slot.locator('.cover-img')
+            if not uploaded_paths:
+                raise ValueError(f'未收到「{path.name}」的封面上传回执，已停止投稿。')
+            assets = '|'.join(re.escape(asset) for asset in uploaded_paths)
+            expect(preview).to_have_attribute('style', re.compile(rf'url\([^)]*(?:{assets})(?=["\')@?])'))
+        finally:
+            page.remove_listener('response', record_upload)
+    except (Error, AssertionError) as exc:
+        raise ValueError(f'封面「{path.name}」未能完成「{stage}」，请检查投稿页。') from exc
 
 
 def fill_submission_fields(page, task):
@@ -165,6 +287,8 @@ def publish(publisher, task):
         path, digest = store.file_hash(task['video'])
         if digest != task['file_hash']:
             raise ValueError('素材已变化，请重新创建任务。')
+        cover = json.loads(task['bili_options']).get('cover')
+        cover_data = checked_cover_bytes(cover) if cover else None
         with sync_playwright() as pw:
             for attempt in range(3):
                 endpoint = browser_debug_endpoint(bit('/browser/open', {'id': pid}))
@@ -208,6 +332,9 @@ def publish(publisher, task):
                 page.wait_for_timeout(750)
             publisher.checkpoint()
             fill_submission_fields(page, task)
+            if cover:
+                store.update(tid, 'uploading', '正在设置并核对 B 站自定义封面。')
+                upload_cover(page, Path(cover['path']), cover_data, publisher.checkpoint)
             submit = page.get_by_text('立即投稿', exact=True).first
             submit.click(trial=True)
             publisher.checkpoint()

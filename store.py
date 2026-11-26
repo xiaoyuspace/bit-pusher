@@ -245,6 +245,15 @@ def archive_failed(task_id):
             temporary.replace(destination)
         elif not source.is_file():
             raise FileNotFoundError('原视频已不存在')
+        if task['platform'] == 'bilibili':
+            cover = json.loads(task['bili_options']).get('cover')
+            if cover:
+                from bilibili import checked_cover_bytes
+                image = checked_cover_bytes(cover)
+                destination = target / Path(cover['path']).name
+                temporary = destination.with_suffix(destination.suffix + '.copying')
+                temporary.write_bytes(image)
+                temporary.replace(destination)
     except Exception as exc:
         with connect() as db:
             db.execute('UPDATE tasks SET message=message || ? WHERE id=?', ('；失败素材归档未完成：' + str(exc)[:200], task_id))

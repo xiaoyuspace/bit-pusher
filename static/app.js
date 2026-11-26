@@ -650,7 +650,7 @@ function resetBili(){
 function biliInput(){
  return {
   profiles:[...$('biliProfiles').querySelectorAll('input:checked')].map(box=>box.value),
-  folder:$('biliFolder').value,title_file:$('biliTitleFile').value,tags:$('biliTags').value,
+  folder:$('biliFolder').value,cover_folder:$('biliCoverFolder').value,title_file:$('biliTitleFile').value,tags:$('biliTags').value,
   statement:$('biliStatement').value,category:$('biliCategory').value.trim(),description:$('biliDescription').value,
   source:$('biliStatement').value==='内容为转载'?$('biliSource').value:'',
  };
@@ -695,10 +695,15 @@ async function pickBiliPath(kind, field){
   if(path){
    resetBili();$(field).value=path;
    $('biliClearTitles').hidden=!$('biliTitleFile').value;
+   $('biliClearCovers').hidden=!$('biliCoverFolder').value;
   }
  }catch(error){$('biliStatus').textContent=error.message}
 }
 $('biliPick').onclick=()=>pickBiliPath('folder','biliFolder');
+$('biliPickCovers').onclick=()=>pickBiliPath('cover_folder','biliCoverFolder');
+$('biliClearCovers').onclick=()=>{
+ $('biliCoverFolder').value='';$('biliClearCovers').hidden=true;resetBili();
+};
 $('biliPickTitles').onclick=()=>pickBiliPath('title_file','biliTitleFile');
 $('biliClearTitles').onclick=()=>{
  $('biliTitleFile').value='';$('biliClearTitles').hidden=true;resetBili();
@@ -706,6 +711,9 @@ $('biliClearTitles').onclick=()=>{
 $('biliPreview').onclick=async()=>{
  resetBili();
  const input=biliInput();
+ if(input.cover_folder&&model?.bili_cover_folder!==true){
+  $('biliStatus').textContent='请重启发布台服务并刷新页面，以使用自定义封面。';return;
+ }
  $('biliPreview').disabled=true;
  try{
   const result=await api('/api/bili/preview',input);
@@ -713,9 +721,10 @@ $('biliPreview').onclick=async()=>{
   biliPlan={...result,input};
   for(const row of result.rows){
    const label=el('label',`#${row.seq} · ${row.profile_name} ← ${row.filename}`), title=el('input');
+   label.append(el('small',row.cover_name?'封面 · '+row.cover_name:'B 站默认封面'));
    title.value=row.text;title.maxLength=80;label.append(title);$('biliRows').append(label);
   }
-  $('biliStatus').textContent='共 '+result.rows.length+' 个视频，请确认标题。';
+  $('biliStatus').textContent='共 '+result.rows.length+' 个视频，请核对视频、封面和标题。';
   $('biliSubmit').disabled=false;
  }catch(error){$('biliStatus').textContent=error.message}
  finally{$('biliPreview').disabled=false}

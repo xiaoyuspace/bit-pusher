@@ -35,9 +35,11 @@
 <p>使用归档的视频和原文案重新发帖。确认发布成功后会删除这条失败归档。</p>
 <div class="dialog-actions"><button id="submitReassign" class="primary" type="submit">重新分配并执行</button></div>
 </form></dialog><dialog id="resolveDialog"><form id="resolveForm"><div class="dialog-head"><h2>核实发布结果</h2><button type="button" id="closeResolve">×</button></div><p>请先打开对应账号时间线。确认已发布后粘贴帖子链接，记录为成功。</p><label>帖子链接<input id="postUrl" type="url" required placeholder="https://x.com/username/status/…"></label><button class="primary" type="submit">记录已发布</button></form></dialog><dialog id="biliDialog"><div class="dialog-head"><h2>哔哩哔哩批量投稿</h2><button id="biliClose">×</button></div>
-<p>每个窗口投一个视频。窗口按序号、视频按文件名自然排序，标题按 TXT 中的顺序配对。请先在所选窗口登录 B 站。</p>
+<p>每个窗口投一个视频。窗口按序号排列，视频和封面各按文件名自然排序（1、2、10），标题按 TXT 顺序配对。请先在所选窗口登录 B 站。</p>
 <fieldset><legend>投稿窗口（每个窗口一个视频）</legend><label><input type="checkbox" id="biliAll"> 全选窗口</label><div id="biliProfiles"></div></fieldset>
 <div class="batch-picker"><input id="biliFolder" readonly placeholder="视频文件夹"><button id="biliPick">选择文件夹</button></div>
+<div class="batch-picker"><input id="biliCoverFolder" aria-label="封面图片文件夹" readonly placeholder="封面图片文件夹（可选）"><button id="biliPickCovers">选择封面文件夹</button><button id="biliClearCovers" hidden>清除</button></div>
+<small>每个视频配一张 JPG 或 PNG，单张最多 20 MB。只读取所选目录，留空使用 B 站默认封面。</small>
 <div class="batch-picker"><input id="biliTitleFile" aria-label="标题 TXT" readonly placeholder="标题 TXT（未选时使用视频文件名）"><button id="biliPickTitles">选择标题 TXT</button><button id="biliClearTitles" hidden>清除</button></div>
 <small>每条标题写一行，相邻标题之间用单独一行 === 分隔。</small>
 <fieldset class="bili-options"><legend>整批共用</legend>
