@@ -640,9 +640,18 @@ function resetBili(){
  $('biliStatus').textContent='';
 }
 function biliInput(){
- return {profiles:[...$('biliProfiles').querySelectorAll('input:checked')].map(box=>box.value),folder:$('biliFolder').value,tags:$('biliTags').value};
+ return {
+  profiles:[...$('biliProfiles').querySelectorAll('input:checked')].map(box=>box.value),
+  folder:$('biliFolder').value,title_file:$('biliTitleFile').value,tags:$('biliTags').value,
+  statement:$('biliStatement').value,category:$('biliCategory').value.trim(),description:$('biliDescription').value,
+  source:$('biliStatement').value==='内容为转载'?$('biliSource').value:'',
+ };
+}
+for(const name of '影视 娱乐 音乐 舞蹈 动画 绘画 鬼畜 游戏 资讯 知识 人工智能 科技数码 汽车 时尚美妆 家装房产 户外潮流 健身 体育运动 手工 美食 小剧场 旅游出行 三农 动物 亲子 健康 情感 vlog 生活兴趣 生活经验'.split(' ')){
+ const option=el('option');option.value=name;$('biliCategories').append(option);
 }
 $('biliOpen').onclick=()=>{
+ if(model?.bili_batch_options!==true){toast('请重启发布台服务，然后刷新页面以使用新版 B 站投稿。');return}
  resetBili();
  const list=$('biliProfiles');
  list.replaceChildren();
@@ -656,7 +665,11 @@ $('biliOpen').onclick=()=>{
  biliDialog.showModal();
 };
 $('biliClose').onclick=()=>biliDialog.close();
-$('biliTags').oninput=resetBili;
+for(const id of ['biliTags','biliCategory','biliSource','biliDescription'])$(id).oninput=resetBili;
+$('biliStatement').onchange=()=>{
+ $('biliSourceLabel').hidden=$('biliStatement').value!=='内容为转载';
+ resetBili();
+};
 $('biliProfiles').onchange=()=>{
  const boxes=$('biliProfiles').querySelectorAll('input');
  const count=biliInput().profiles.length;
@@ -668,11 +681,19 @@ $('biliAll').onchange=()=>{
  for(const box of $('biliProfiles').querySelectorAll('input'))box.checked=$('biliAll').checked;
  resetBili();
 };
-$('biliPick').onclick=async()=>{
+async function pickBiliPath(kind, field){
  try{
-  const {path}=await api('/api/batch/pick',{kind:'folder'});
-  if(path){resetBili();$('biliFolder').value=path}
+  const {path}=await api('/api/batch/pick',{kind});
+  if(path){
+   resetBili();$(field).value=path;
+   $('biliClearTitles').hidden=!$('biliTitleFile').value;
+  }
  }catch(error){$('biliStatus').textContent=error.message}
+}
+$('biliPick').onclick=()=>pickBiliPath('folder','biliFolder');
+$('biliPickTitles').onclick=()=>pickBiliPath('title_file','biliTitleFile');
+$('biliClearTitles').onclick=()=>{
+ $('biliTitleFile').value='';$('biliClearTitles').hidden=true;resetBili();
 };
 $('biliPreview').onclick=async()=>{
  resetBili();
@@ -695,7 +716,7 @@ $('biliSubmit').onclick=async()=>{
  if(!biliPlan)return;
  const input=biliPlan.input;
  const titles=[...$('biliRows').querySelectorAll('input')].map(e=>e.value);
- const controls=biliDialog.querySelectorAll('button,input,select');
+ const controls=biliDialog.querySelectorAll('button,input,select,textarea');
  controls.forEach(e=>e.disabled=true);
  try{
   const result=await api('/api/bili/create',{...input,signature:biliPlan.signature,titles});

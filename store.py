@@ -39,6 +39,8 @@ def init():
             db.execute("ALTER TABLE tasks ADD COLUMN platform TEXT NOT NULL DEFAULT 'x'")
         if 'bili_tags' not in columns:
             db.execute("ALTER TABLE tasks ADD COLUMN bili_tags TEXT NOT NULL DEFAULT ''")
+        if 'bili_options' not in columns:
+            db.execute("ALTER TABLE tasks ADD COLUMN bili_options TEXT NOT NULL DEFAULT '{}'")
         db.execute("UPDATE tasks SET state='unknown',message='服务在提交期间中断；请核实账号时间线，禁止自动重试。' WHERE state='submitting'")
         db.execute("UPDATE tasks SET state='failed',message='服务中断，任务未提交。检查后可重新排队。' WHERE state IN ('preparing','uploading')")
         db.execute("UPDATE tasks SET state='draft',message='服务重启后已恢复草稿，请重新选择执行。' WHERE state='queued'")
@@ -123,9 +125,10 @@ def create_task(data, db=None, *, platform='x', tags=''):
     task_id, now = uuid.uuid4().hex, time.time()
     with (connect() if db is None else nullcontext(db)) as db:
         try:
-            inserted = db.execute('''INSERT INTO tasks(id,profile_id,profile_name,handle,text,video,file_hash,fingerprint,state,message,created,updated,platform,bili_tags)
-                SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM published_fingerprints WHERE fingerprint=?)''',
-                (task_id,profile,str(data.get('profile_name', profile))[:150],handle,text,video,digest,fp,'draft','任务已保存，等待执行。',now,now,platform,tags,fp))
+            options = data.get('bili_options', {}) if platform == 'bilibili' else {}
+            inserted = db.execute('''INSERT INTO tasks(id,profile_id,profile_name,handle,text,video,file_hash,fingerprint,state,message,created,updated,platform,bili_tags,bili_options)
+                SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM published_fingerprints WHERE fingerprint=?)''',
+                (task_id,profile,str(data.get('profile_name', profile))[:150],handle,text,video,digest,fp,'draft','任务已保存，等待执行。',now,now,platform,tags,json.dumps(options, ensure_ascii=False),fp))
             if not inserted.rowcount:
                 raise ValueError('此窗口曾提交过相同文案和视频，原任务记录已删除。')
         except sqlite3.IntegrityError:

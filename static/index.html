@@ -25,10 +25,17 @@
 <p>使用归档的视频和原文案重新发帖。确认发布成功后会删除这条失败归档。</p>
 <div class="dialog-actions"><button id="submitReassign" class="primary" type="submit">重新分配并执行</button></div>
 </form></dialog><dialog id="resolveDialog"><form id="resolveForm"><div class="dialog-head"><h2>核实发布结果</h2><button type="button" id="closeResolve">×</button></div><p>请先打开对应账号时间线。确认已发布后粘贴帖子链接，记录为成功。</p><label>帖子链接<input id="postUrl" type="url" required placeholder="https://x.com/username/status/…"></label><button class="primary" type="submit">记录已发布</button></form></dialog><dialog id="biliDialog"><div class="dialog-head"><h2>哔哩哔哩批量投稿</h2><button id="biliClose">×</button></div>
-<p>按窗口序号从小到大，与按文件名自然排序的视频一一配对。请先在所选窗口登录 B 站。</p>
+<p>每个窗口投一个视频。窗口按序号、视频按文件名自然排序，标题按 TXT 中的顺序配对。请先在所选窗口登录 B 站。</p>
 <fieldset><legend>投稿窗口（每个窗口一个视频）</legend><label><input type="checkbox" id="biliAll"> 全选窗口</label><div id="biliProfiles"></div></fieldset>
 <div class="batch-picker"><input id="biliFolder" readonly placeholder="视频文件夹"><button id="biliPick">选择文件夹</button></div>
-<label>整批标签 <input id="biliTags" placeholder="多个标签用逗号分隔"></label>
+<div class="batch-picker"><input id="biliTitleFile" aria-label="标题 TXT" readonly placeholder="标题 TXT（未选时使用视频文件名）"><button id="biliPickTitles">选择标题 TXT</button><button id="biliClearTitles" hidden>清除</button></div>
+<small>每条标题写一行，相邻标题之间用单独一行 === 分隔。</small>
+<fieldset class="bili-options"><legend>整批共用</legend>
+<label>创作声明<select id="biliStatement"><option value="">请选择</option><option>内容无需标注</option><option>含AI生成内容</option><option>含虚构演绎内容</option><option>内容含营销信息</option><option>个人观点，仅供参考</option><option>内容为转载</option></select></label>
+<label>分区<input id="biliCategory" list="biliCategories" maxlength="100" placeholder="选择或输入分区"><datalist id="biliCategories"></datalist></label>
+<label id="biliSourceLabel" hidden>转载来源<input id="biliSource" maxlength="200" placeholder="填写整批视频的实际来源"></label>
+<label>标签<input id="biliTags" placeholder="1–10 个标签，用逗号分隔"></label>
+<label>简介（选填）<textarea id="biliDescription" maxlength="2000" rows="3"></textarea></label></fieldset>
 <button id="biliPreview">检查数量并预览配对</button><div id="biliRows"></div>
 <p id="biliStatus" role="status"></p><button class="primary" id="biliSubmit" disabled>确认并批量投稿</button></dialog><dialog id="batchDialog"><div class="dialog-head"><h2>批量发布</h2><button id="batchClose">×</button></div><label>发布类型<select id="batchMode"><option value="video">视频和文案</option><option value="text">仅文案</option></select></label>
 <div id="batchTextOnly" hidden><label>直接粘贴文案<textarea id="batchPastedText" rows="5" placeholder="一条文案可用于全部所选窗口；多条请用单独一行 === 分隔"></textarea></label></div>

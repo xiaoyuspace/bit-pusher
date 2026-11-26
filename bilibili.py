@@ -7,11 +7,32 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import store
-from batch import natural_key
+from batch import natural_key, read_txt
 
 
 UPLOAD_URL = 'https://member.bilibili.com/platform/upload/video/frame'
 HOME_URL = 'https://www.bilibili.com/'
+
+
+def checked_title(value):
+    if not isinstance(value, str) or not 1 <= len(value.strip()) <= 80 or len(value.strip().splitlines()) != 1:
+        raise ValueError('每条标题须为一行，长度为 1–80 字。')
+    return value.strip()
+
+
+def batch_options(body):
+    options = {}
+    for key, label, limit in [('description', '简介', 2000), ('statement', '创作声明', 80),
+                              ('category', '分区', 100), ('source', '转载来源', 200)]:
+        value = body.get(key, '')
+        if not isinstance(value, str) or len(value.strip()) > limit:
+            raise ValueError(f'{label}最多可填 {limit} 字。')
+        options[key] = value.strip()
+    if not options['statement'] or not options['category']:
+        raise ValueError('请选择创作声明并填写分区。')
+    if options['statement'] == '内容为转载' and not options['source']:
+        raise ValueError('请填写整批转载视频的实际来源。')
+    return options
 
 
 def plan(body, profiles):
@@ -34,12 +55,27 @@ def plan(body, profiles):
         raise ValueError('请选择含有 1–200 个 MP4、MOV 或 WebM 文件的文件夹。')
     if len(files) != len(targets):
         raise ValueError(f'已选 {len(targets)} 个窗口，文件夹有 {len(files)} 个视频。每个窗口需要一个视频，请调整数量。')
+    options = batch_options(body)
+    if body.get('title_file'):
+        path = Path(body['title_file'])
+        if not path.is_absolute() or path.suffix.lower() != '.txt' or not path.is_file() or path.stat().st_size > 5_000_000:
+            raise ValueError('请选择不超过 5 MB 的本地标题 TXT 文件。')
+        titles = re.split(r'(?m)^[^\S\n]*===[^\S\n]*$', read_txt(path))
+        if len(titles) != len(files):
+            raise ValueError(f'共有 {len(titles)} 条标题、{len(files)} 个视频，请用单独一行 === 分隔每条标题。')
+        for i, title in enumerate(titles, 1):
+            try:
+                titles[i - 1] = checked_title(title)
+            except ValueError as exc:
+                raise ValueError(f'标题文件第 {i} 条有误。{exc}') from exc
+    else:
+        titles = [p.stem[:80] for p in files]
     rows = []
-    for path, profile in zip(files, targets):
+    for path, profile, title in zip(files, targets, titles):
         stat = path.stat()
         if not stat.st_size:
             raise ValueError(f'{path.name} 为空文件。')
-        rows.append(dict(video=str(path.resolve()), filename=path.name, text=path.stem[:80],
+        rows.append(dict(video=str(path.resolve()), filename=path.name, text=title, bili_options=options,
                          seq=profile['seq'], profile_id=profile['id'], profile_name=profile.get('name') or str(profile['seq']),
                          size=stat.st_size, modified=stat.st_mtime_ns, tags=','.join(tags)))
     signature = hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
@@ -50,6 +86,70 @@ def is_submission(response):
     url = urlsplit(response.url)
     return (response.request.method == 'POST' and url.hostname == 'member.bilibili.com'
             and re.fullmatch(r'/x/(?:(?:v\d+|vu|vupre)/)?web/(?:(?:archives?|article)/)?add(?:/v\d+)?/?', url.path) is not None)
+
+
+def fill_submission_fields(page, task):
+    from playwright.sync_api import Error, expect
+
+    options = json.loads(task['bili_options'])
+    field = '标题'
+    try:
+        title = page.locator('input[placeholder*="标题"]:visible, .video-title input:visible').first
+        title.fill(task['text'])
+        if options:
+            field = '创作声明'
+            statement = page.locator('.creation-statement-container:visible')
+            selected = statement.locator('.bcc-select-input-inner')
+            if selected.input_value() != options['statement']:
+                selected.click()
+                statement.locator('.bcc-option:not(.is-disabled)').get_by_text(options['statement'], exact=True).click()
+            expect(selected).to_have_value(options['statement'])
+            if options['statement'] == '内容为转载':
+                field = '转载来源'
+                source = statement.locator('.statement-source input')
+                source.fill(options['source'])
+                expect(source).to_have_value(options['source'])
+
+            field = '分区'
+            category = page.locator('.video-human-type:visible, .video-type:visible').first
+            category_name = ' → '.join(part.strip() for part in options['category'].split('→'))
+            current = category.locator('.select-item-cont')
+            if current.inner_text().strip() != category_name:
+                category.locator('.select-controller').click()
+                if ' → ' in category_name:
+                    parent, child = category_name.split(' → ', 1)
+                    category.locator('.drop-f-wrp').get_by_text(parent, exact=True).click()
+                    category.locator('.drop-t-wrp').get_by_text(child, exact=True).click()
+                else:
+                    category.locator('.human-type-list').get_by_text(category_name, exact=True).click()
+            expect(current).to_have_text(category_name)
+
+            field = '简介'
+            editor = page.locator('.desc-container:visible .ql-editor[contenteditable=true]')
+            editor.fill(options['description'])
+            editor.press('Tab')
+            expect(editor).to_have_text(options['description'], use_inner_text=True)
+
+        field = '标签'
+        tags = task['bili_tags'].split(',')
+        group = page.locator('.tag-input-wrp:visible').filter(has=page.locator('input[placeholder*="标签"]'))
+        labels = group.locator('.label-item-v2-content')
+        for existing in labels.all_text_contents():
+            if existing not in tags:
+                group.locator('.label-item-v2-container').filter(has_text=re.compile('^' + re.escape(existing) + '$')).click()
+                expect(group.get_by_text(existing, exact=True)).to_have_count(0)
+        for tag in tags:
+            if tag not in labels.all_text_contents():
+                tag_input = group.locator('input')
+                tag_input.fill(tag)
+                tag_input.press('Enter')
+                expect(group.get_by_text(tag, exact=True)).to_be_visible()
+        if sorted(labels.all_text_contents()) != sorted(tags):
+            raise ValueError('页面标签与整批配置不一致，请检查该窗口。')
+        field = '标题'
+        expect(title).to_have_value(task['text'])
+    except (Error, AssertionError) as exc:
+        raise ValueError(f'无法填写或核实「{field}」，请检查该窗口的投稿页和整批配置。') from exc
 
 
 def publish(publisher, task):
@@ -100,20 +200,14 @@ def publish(publisher, task):
                 page.wait_for_timeout(500)
             if not page.get_by_text(source.stem, exact=True).first.is_visible() and title.input_value() != source.stem:
                 raise ValueError('当前编辑页的视频名称与任务素材不一致，请手动检查。')
-            title.fill(task['text'])
-            tag_input = page.locator('input[placeholder*="标签"]:visible, .tag-input-wrp input:visible').first
-            for tag in task['bili_tags'].split(','):
-                publisher.checkpoint()
-                tag_input.fill(tag)
-                tag_input.press('Enter')
             uploaded = page.get_by_text(re.compile(r'上传完成|上传成功'))
             while not uploaded.first.is_visible():
                 publisher.checkpoint()
                 if time.monotonic() >= deadline or page.get_by_text('上传失败', exact=True).first.is_visible():
                     raise ValueError('视频上传未完成，请在窗口中检查。')
                 page.wait_for_timeout(750)
-            if title.input_value().strip() != task['text']:
-                raise ValueError('投稿标题未保存，请检查。')
+            publisher.checkpoint()
+            fill_submission_fields(page, task)
             submit = page.get_by_text('立即投稿', exact=True).first
             submit.click(trial=True)
             publisher.checkpoint()

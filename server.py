@@ -14,14 +14,14 @@ import window_manager as wm
 import window_sync
 from worker import profiles, publisher
 
-VERSION = '2026-11-13-batch-manual-check'
+VERSION = '2026-11-26-bili-batch-options'
 PORT = 8766
 TOKEN = secrets.token_urlsafe(32)
 PICKER_LOCK = Lock()
 
 
 def pick_batch_path(kind):
-    if kind not in ('folder', 'text_file'):
+    if kind not in ('folder', 'text_file', 'title_file'):
         raise ValueError('无效的素材选择类型。')
     if not PICKER_LOCK.acquire(blocking=False):
         raise ValueError('已有选择窗口打开，请先完成或取消。')
@@ -47,7 +47,8 @@ def show_batch_picker(kind):
         root.attributes('-topmost', True)
         if kind == 'folder':
             return filedialog.askdirectory(parent=root, title='选择视频文件夹', mustexist=True)
-        return filedialog.askopenfilename(parent=root, title='选择文案 TXT 文件', filetypes=[('TXT 文本文件', '*.txt')])
+        title = '选择标题 TXT 文件' if kind == 'title_file' else '选择文案 TXT 文件'
+        return filedialog.askopenfilename(parent=root, title=title, filetypes=[('TXT 文本文件', '*.txt')])
     finally:
         root.destroy()
 
@@ -81,7 +82,7 @@ class Handler(BaseHTTPRequestHandler):
                 activity = publisher.activity
                 closing_tasks = publisher.closing_task_ids()
                 reserved_profiles = sorted(publisher.reserved_profiles())
-            return self.send({'version':VERSION,'batch_manual_check':True,'editable_batch':True,'text_only_batch':True,
+            return self.send({'version':VERSION,'batch_manual_check':True,'editable_batch':True,'text_only_batch':True,'bili_batch_options':True,
                               'pid':os.getpid(),'token':TOKEN,'tasks':store.tasks(),
                               'running':running,'current':current,'activity':activity,
                               'closing_tasks':closing_tasks,'reserved_profiles':reserved_profiles,'window_job':wm.job,
@@ -135,7 +136,7 @@ class Handler(BaseHTTPRequestHandler):
                 if self.path.endswith('/preview'):
                     return self.send({'rows': rows, 'signature': signature})
                 if body.get('signature') != signature:
-                    raise ValueError('视频或窗口已变化，请重新预览。')
+                    raise ValueError('视频、标题、窗口或投稿配置已变化，请重新预览。')
                 titles = body.get('titles')
                 if not isinstance(titles, list) or len(titles) != len(rows):
                     raise ValueError('请重新预览标题。')
@@ -143,9 +144,7 @@ class Handler(BaseHTTPRequestHandler):
                     db.execute('BEGIN IMMEDIATE')
                     ids = []
                     for row, title in zip(rows, titles):
-                        if not isinstance(title, str) or not 1 <= len(title.strip()) <= 80:
-                            raise ValueError('每条标题须为 1–80 字。')
-                        row['text'] = title.strip()
+                        row['text'] = bilibili.checked_title(title)
                         ids.append(store.create_task(row, db, platform='bilibili', tags=row['tags']))
                 try:
                     publisher.run(ids)

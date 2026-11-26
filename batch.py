@@ -9,6 +9,13 @@ def natural_key(path):
     return [int(s) if s.isdigit() else s.casefold() for s in re.split(r'(\d+)', path.name)]
 
 
+def read_txt(text):
+    try:
+        return text.read_text(encoding='utf-8-sig')
+    except UnicodeDecodeError:
+        return text.read_text(encoding='gb18030')
+
+
 def plan(folder, text_file, selected, available, generated='', text_only=False):
     root = Path(str(folder).strip().strip('"')).expanduser()
     text = Path(str(text_file).strip().strip('"')).expanduser()
@@ -21,10 +28,7 @@ def plan(folder, text_file, selected, available, generated='', text_only=False):
     else:
         if not text.is_absolute() or not text.is_file() or text.stat().st_size > 5_000_000:
             raise ValueError('请选择小于 5 MB 的文案 TXT 文件完整路径。')
-        try:
-            raw = text.read_text(encoding='utf-8-sig')
-        except UnicodeDecodeError:
-            raw = text.read_text(encoding='gb18030')
+        raw = read_txt(text)
     texts = [s.strip() for s in re.split(r'(?m)^\s*===\s*$', raw)]
     if not texts or any(not t for t in texts):
         raise ValueError('文案包含空条目，请检查开头、结尾和连续的 === 分隔行。')
