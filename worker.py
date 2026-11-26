@@ -363,9 +363,12 @@ class Publisher:
     def run(self, ids):
         with self.lock:
             import window_manager as wm
-            profile_ids = [store.get(i)['profile_id'] for i in (ids or [])]
+            tasks = [store.get(i) for i in (ids or [])]
+            profile_ids = [t['profile_id'] for t in tasks]
             wm.require_unmanaged(profile_ids)
-            wm.require_ready(profile_ids)
+            x_ids = [t['profile_id'] for t in tasks if t['platform'] == 'x']
+            if x_ids:
+                wm.require_ready(x_ids)
             store.enqueue(ids)
             self.start_worker()
 
@@ -425,6 +428,10 @@ class Publisher:
 
     def execute(self, task, prepare_only=False):
         tid = task['id']
+        if task['platform'] == 'bilibili':
+            from bilibili import publish
+            publish(self, task)
+            return
         submitted = False
         page = None
         stage = None

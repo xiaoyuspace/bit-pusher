@@ -34,6 +34,11 @@ def init():
         CREATE TABLE IF NOT EXISTS published_fingerprints(fingerprint TEXT PRIMARY KEY);
         CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY,task_id TEXT,time REAL,message TEXT);
         ''')
+        columns = {r['name'] for r in db.execute('PRAGMA table_info(tasks)')}
+        if 'platform' not in columns:
+            db.execute("ALTER TABLE tasks ADD COLUMN platform TEXT NOT NULL DEFAULT 'x'")
+        if 'bili_tags' not in columns:
+            db.execute("ALTER TABLE tasks ADD COLUMN bili_tags TEXT NOT NULL DEFAULT ''")
         db.execute("UPDATE tasks SET state='unknown',message='服务在提交期间中断；请核实账号时间线，禁止自动重试。' WHERE state='submitting'")
         db.execute("UPDATE tasks SET state='failed',message='服务中断，任务未提交。检查后可重新排队。' WHERE state IN ('preparing','uploading')")
         db.execute("UPDATE tasks SET state='draft',message='服务重启后已恢复草稿，请重新选择执行。' WHERE state='queued'")
@@ -82,7 +87,7 @@ def reassign_failed(task_id, profile_id, profile_name):
     with connect() as db:
         db.execute('BEGIN IMMEDIATE')
         task = db.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone()
-        if not task or task['state'] not in ('failed', 'blocked') or task['url']:
+        if not task or task['platform'] != 'x' or task['state'] not in ('failed', 'blocked') or task['url']:
             raise ValueError('只可重新分配未发布的失败或受阻任务。')
         archive = archived_video(task)
         if not archive:
@@ -104,7 +109,7 @@ def reassign_failed(task_id, profile_id, profile_name):
         db.execute('INSERT INTO logs(task_id,time,message) VALUES(?,?,?)', (task_id, now, message))
 
 
-def create_task(data, db=None):
+def create_task(data, db=None, *, platform='x', tags=''):
     handle = ''  # Retained column for compatibility with existing task databases.
     text = str(data.get('text', '')).strip()
     if not text or len(text) > 25000:
@@ -114,13 +119,13 @@ def create_task(data, db=None):
         raise ValueError('请选择浏览器窗口。')
     source = str(data.get('video', '')).strip().strip('"')
     video, digest = file_hash(source) if source else ('', '')
-    fp = fingerprint(profile, text, digest)
+    fp = fingerprint(profile if platform == 'x' else 'bilibili:' + profile, text, digest)
     task_id, now = uuid.uuid4().hex, time.time()
     with (connect() if db is None else nullcontext(db)) as db:
         try:
-            inserted = db.execute('''INSERT INTO tasks(id,profile_id,profile_name,handle,text,video,file_hash,fingerprint,state,message,created,updated)
-                SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM published_fingerprints WHERE fingerprint=?)''',
-                (task_id,profile,str(data.get('profile_name', profile))[:150],handle,text,video,digest,fp,'draft','任务已保存，等待执行。',now,now,fp))
+            inserted = db.execute('''INSERT INTO tasks(id,profile_id,profile_name,handle,text,video,file_hash,fingerprint,state,message,created,updated,platform,bili_tags)
+                SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM published_fingerprints WHERE fingerprint=?)''',
+                (task_id,profile,str(data.get('profile_name', profile))[:150],handle,text,video,digest,fp,'draft','任务已保存，等待执行。',now,now,platform,tags,fp))
             if not inserted.rowcount:
                 raise ValueError('此窗口曾提交过相同文案和视频，原任务记录已删除。')
         except sqlite3.IntegrityError:
@@ -133,7 +138,7 @@ def tasks():
         rows = [dict(r) for r in db.execute('SELECT * FROM tasks ORDER BY created DESC')]
     for task in rows:
         task['can_reassign'] = (
-            task['state'] in ('failed', 'blocked') and not task['url'] and bool(archived_video(task))
+            task['platform'] == 'x' and task['state'] in ('failed', 'blocked') and not task['url'] and bool(archived_video(task))
         )
     return rows
 
@@ -209,7 +214,10 @@ def cancel_queued():
 
 
 def resolve(task_id, url):
-    if not re.fullmatch(r'https://(?:x\.com|twitter\.com)/[A-Za-z0-9_]+/status/[0-9]+', url):
+    if get(task_id)['platform'] == 'bilibili':
+        if not re.fullmatch(r'https://www\.bilibili\.com/video/(?:BV[A-Za-z0-9]{10}|av[0-9]+)/?', url):
+            raise ValueError('请提供 B 站视频详情链接。')
+    elif not re.fullmatch(r'https://(?:x\.com|twitter\.com)/[A-Za-z0-9_]+/status/[0-9]+', url):
         raise ValueError('请提供核实后的完整帖子链接。')
     if get(task_id)['state'] != 'unknown':
         raise ValueError('仅待核实任务可以手动确认。')

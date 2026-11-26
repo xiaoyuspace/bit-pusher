@@ -129,6 +129,29 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == '/api/windows':
                 wm.start(body)
                 return self.send({'ok':True})
+            if self.path in ('/api/bili/preview', '/api/bili/create'):
+                import bilibili
+                rows, signature = bilibili.plan(body, profiles())
+                if self.path.endswith('/preview'):
+                    return self.send({'rows': rows, 'signature': signature})
+                if body.get('signature') != signature:
+                    raise ValueError('视频或窗口已变化，请重新预览。')
+                titles = body.get('titles')
+                if not isinstance(titles, list) or len(titles) != len(rows):
+                    raise ValueError('请重新预览标题。')
+                with store.connect() as db:
+                    db.execute('BEGIN IMMEDIATE')
+                    ids = []
+                    for row, title in zip(rows, titles):
+                        if not isinstance(title, str) or not 1 <= len(title.strip()) <= 80:
+                            raise ValueError('每条标题须为 1–80 字。')
+                        row['text'] = title.strip()
+                        ids.append(store.create_task(row, db, platform='bilibili', tags=row['tags']))
+                try:
+                    publisher.run(ids)
+                except ValueError as exc:
+                    return self.send({'message': f'已保存 {len(ids)} 条草稿。{exc}'})
+                return self.send({'message': f'已加入队列，共 {len(ids)} 条 B 站视频投稿。'})
             if self.path == '/api/batch/pick':
                 return self.send({'path':pick_batch_path(body.get('kind'))})
             if self.path in ('/api/batch/preview','/api/batch/create'):

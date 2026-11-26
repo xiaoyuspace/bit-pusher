@@ -17,7 +17,7 @@ async function api(path,body){const r=await fetch(path,{method:'POST',headers:{'
 async function refresh(){try{const r=await fetch('/api/state');if(!r.ok)throw Error();const previousSync=model?.window_sync_revision;model=await r.json();render();renderWindowJob();const stamp=JSON.stringify(model.tasks.map(t=>[t.id,t.state]));if(profileStateStamp!==null&&(profileStateStamp!==stamp||previousSync!==model.window_sync_revision))loadProfiles();profileStateStamp=stamp}catch(e){$('connectionText').textContent='工作台服务已断开，请重新运行 start.cmd。'}}
 async function loadProfiles(){try{$('reloadProfiles').disabled=true;const r=await fetch('/api/profiles');const data=await r.json();if(!r.ok)throw Error(data.error);windows=data.profiles;renderWindows();$('profile').replaceChildren(el('option','请选择窗口'));$('profile').firstChild.value='';for(const w of windows.filter(w=>w.state==='ready')){const o=el('option',`#${w.seq} · ${w.name||'未命名窗口'}`);o.value=w.id;$('profile').append(o)}$('connectionTitle').textContent='比特浏览器已连接';$('connectionText').textContent=`读取到 ${windows.length} 个窗口 · 每条任务独立指定账号、文案和视频`;$('dot').classList.add('on')}catch(e){$('connectionTitle').textContent='比特浏览器未连接';$('connectionText').textContent=e.message;$('dot').classList.remove('on')}finally{$('reloadProfiles').disabled=false}}
 function render(){document.title='比特发布台 · '+(model.version||'旧版本，请重启');const tasks=model.tasks;const valid=new Set(tasks.filter(selectable).map(t=>t.id));selected=new Set([...selected].filter(id=>valid.has(id)));$('waiting').textContent=tasks.filter(t=>['draft','queued'].includes(t.state)).length;$('working').textContent=tasks.filter(t=>['preparing','uploading','submitting'].includes(t.state)).length;$('success').textContent=tasks.filter(t=>t.state==='success').length;$('attention').textContent=tasks.filter(t=>['failed','unknown','blocked'].includes(t.state)).length;const runnableCount=tasks.filter(t=>selected.has(t.id)&&runnable(t)).length;$('run').disabled=!runnableCount||deletingTasks;$('run').textContent=runnableCount?`执行选中任务 (${runnableCount})`:'执行选中任务';$('deleteTasks').disabled=!selected.size||deletingTasks;$('deleteTasks').textContent=selected.size?`删除选中 (${selected.size})`:'删除选中';$('stop').disabled=!model.running;$('rows').replaceChildren();const list=tasks.filter(taskMatches);const choices=list.filter(selectable);const checked=choices.filter(t=>selected.has(t.id)).length;$('selectAll').disabled=!choices.length;$('selectAll').checked=!!checked&&checked===choices.length;$('selectAll').indeterminate=checked>0&&checked<choices.length;$('count').textContent=`${list.length} 个任务`;$('empty').hidden=list.length>0;
-for(const t of list){const tr=el('tr'),checkCell=el('td'),check=el('input');check.type='checkbox';check.checked=selected.has(t.id);check.disabled=!selectable(t);check.setAttribute('aria-label','选择 '+t.profile_name+' 的任务');check.addEventListener('change',()=>{check.checked?selected.add(t.id):selected.delete(t.id);render()});checkCell.append(check);tr.append(checkCell);const account=el('td');account.append(el('div',t.profile_name,'handle'));tr.append(account);const content=el('td');content.append(el('div',t.text,'task-text'),el('div','▧ '+t.video.split(/[\\/]/).pop(),'meta'));tr.append(content);const state=el('td');state.append(el('span',labels[t.state]||t.state,'badge '+t.state));tr.append(state);const result=el('td');result.append(el('div',t.message,'message'));appendTaskActivity(result,t);if(t.url){const link=el('a','查看已发布帖子 ↗','result-link');link.href=t.url;link.target='_blank';link.rel='noopener noreferrer';result.append(link)}if(t.state==='unknown'){const b=el('button','核实并记录链接','resolve');b.addEventListener('click',()=>{resolveId=t.id;$('postUrl').value='';$('resolveDialog').showModal()});result.append(b)}if(t.can_reassign&&model.current!==t.id)result.append(reassignButton(t));tr.append(result);$('rows').append(tr)}}
+for(const t of list){const tr=el('tr'),checkCell=el('td'),check=el('input');check.type='checkbox';check.checked=selected.has(t.id);check.disabled=!selectable(t);check.setAttribute('aria-label','选择 '+t.profile_name+' 的任务');check.addEventListener('change',()=>{check.checked?selected.add(t.id):selected.delete(t.id);render()});checkCell.append(check);tr.append(checkCell);const account=el('td');account.append(el('div',(t.platform==='bilibili'?'B站 · ':'')+t.profile_name,'handle'));tr.append(account);const content=el('td');content.append(el('div',t.text,'task-text'),el('div','▧ '+t.video.split(/[\\/]/).pop(),'meta'));tr.append(content);const state=el('td');state.append(el('span',labels[t.state]||t.state,'badge '+t.state));tr.append(state);const result=el('td');result.append(el('div',t.message,'message'));appendTaskActivity(result,t);if(t.url){const link=el('a','查看已发布帖子 ↗','result-link');link.href=t.url;link.target='_blank';link.rel='noopener noreferrer';result.append(link)}if(t.state==='unknown'){const b=el('button','核实并记录链接','resolve');b.addEventListener('click',()=>{resolveId=t.id;$('postUrl').placeholder=t.platform==='bilibili'?'https://www.bilibili.com/video/BV…':'https://x.com/username/status/…';$('postUrl').value='';$('resolveDialog').showModal()});result.append(b)}if(t.can_reassign&&model.current!==t.id)result.append(reassignButton(t));tr.append(result);$('rows').append(tr)}}
 function newTask(){if(!windows.length){toast('请先连接比特浏览器并读取窗口列表');return}$('editor').showModal()}
 $('newTask').onclick=newTask;$('emptyNew').onclick=newTask;$('closeEditor').onclick=()=>$('editor').close();$('reloadProfiles').onclick=loadProfiles;$('filter').onchange=()=>{selected.clear();render()};
 $('selectAll').onchange=()=>{selected=$('selectAll').checked?new Set(model.tasks.filter(t=>selectable(t)&&taskMatches(t)).map(t=>t.id)):new Set();render()};
@@ -630,3 +630,60 @@ credentialDialog.addEventListener('close', () => {
  $('credentialPassphrase').value = '';
  $('credentialFile').value = '';
 });
+
+const biliDialog=$('biliDialog');
+let biliPlan=null;
+function resetBili(){
+ biliPlan=null;
+ $('biliRows').replaceChildren();
+ $('biliSubmit').disabled=true;
+ $('biliStatus').textContent='';
+}
+function biliInput(){
+ return {profile:$('biliProfile').value,folder:$('biliFolder').value,tags:$('biliTags').value};
+}
+$('biliOpen').onclick=()=>{
+ resetBili();
+ $('biliProfile').replaceChildren(...[...windows].sort((a,b)=>a.seq-b.seq).map(w=>new Option('#'+w.seq+' · '+w.name,w.id)));
+ const last=localStorage.getItem('biliProfile');
+ if(windows.some(w=>w.id===last))$('biliProfile').value=last;
+ biliDialog.showModal();
+};
+$('biliClose').onclick=()=>biliDialog.close();
+$('biliProfile').onchange=$('biliTags').oninput=resetBili;
+$('biliPick').onclick=async()=>{
+ try{
+  const {path}=await api('/api/batch/pick',{kind:'folder'});
+  if(path){resetBili();$('biliFolder').value=path}
+ }catch(error){$('biliStatus').textContent=error.message}
+};
+$('biliPreview').onclick=async()=>{
+ resetBili();
+ const input=biliInput();
+ $('biliPreview').disabled=true;
+ try{
+  const result=await api('/api/bili/preview',input);
+  if(JSON.stringify(input)!==JSON.stringify(biliInput()))return;
+  biliPlan={...result,input};
+  for(const row of result.rows){
+   const label=el('label',row.filename), title=el('input');
+   title.value=row.text;title.maxLength=80;label.append(title);$('biliRows').append(label);
+  }
+  $('biliStatus').textContent='共 '+result.rows.length+' 个视频，请确认标题。';
+  $('biliSubmit').disabled=false;
+ }catch(error){$('biliStatus').textContent=error.message}
+ finally{$('biliPreview').disabled=false}
+};
+$('biliSubmit').onclick=async()=>{
+ if(!biliPlan)return;
+ const input=biliPlan.input;
+ const titles=[...$('biliRows').querySelectorAll('input')].map(e=>e.value);
+ const controls=biliDialog.querySelectorAll('button,input,select');
+ controls.forEach(e=>e.disabled=true);
+ try{
+  const result=await api('/api/bili/create',{...input,signature:biliPlan.signature,titles});
+  localStorage.setItem('biliProfile',input.profile);
+  biliDialog.close();resetBili();toast(result.message);await refresh();
+ }catch(error){$('biliStatus').textContent=error.message}
+ finally{controls.forEach(e=>e.disabled=false);$('biliSubmit').disabled=!biliPlan}
+};
