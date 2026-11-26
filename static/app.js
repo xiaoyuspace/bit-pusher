@@ -640,17 +640,34 @@ function resetBili(){
  $('biliStatus').textContent='';
 }
 function biliInput(){
- return {profile:$('biliProfile').value,folder:$('biliFolder').value,tags:$('biliTags').value};
+ return {profiles:[...$('biliProfiles').querySelectorAll('input:checked')].map(box=>box.value),folder:$('biliFolder').value,tags:$('biliTags').value};
 }
 $('biliOpen').onclick=()=>{
  resetBili();
- $('biliProfile').replaceChildren(...[...windows].sort((a,b)=>a.seq-b.seq).map(w=>new Option('#'+w.seq+' · '+w.name,w.id)));
- const last=localStorage.getItem('biliProfile');
- if(windows.some(w=>w.id===last))$('biliProfile').value=last;
+ const list=$('biliProfiles');
+ list.replaceChildren();
+ for(const w of [...windows].sort((a,b)=>a.seq-b.seq)){
+  const label=el('label'),box=el('input');
+  box.type='checkbox';box.value=w.id;
+  label.append(box,document.createTextNode(' #'+w.seq+' · '+w.name));list.append(label);
+ }
+ $('biliAll').checked=false;
+ $('biliAll').indeterminate=false;
  biliDialog.showModal();
 };
 $('biliClose').onclick=()=>biliDialog.close();
-$('biliProfile').onchange=$('biliTags').oninput=resetBili;
+$('biliTags').oninput=resetBili;
+$('biliProfiles').onchange=()=>{
+ const boxes=$('biliProfiles').querySelectorAll('input');
+ const count=biliInput().profiles.length;
+ $('biliAll').checked=count>0&&count===boxes.length;
+ $('biliAll').indeterminate=count>0&&count<boxes.length;
+ resetBili();
+};
+$('biliAll').onchange=()=>{
+ for(const box of $('biliProfiles').querySelectorAll('input'))box.checked=$('biliAll').checked;
+ resetBili();
+};
 $('biliPick').onclick=async()=>{
  try{
   const {path}=await api('/api/batch/pick',{kind:'folder'});
@@ -666,7 +683,7 @@ $('biliPreview').onclick=async()=>{
   if(JSON.stringify(input)!==JSON.stringify(biliInput()))return;
   biliPlan={...result,input};
   for(const row of result.rows){
-   const label=el('label',row.filename), title=el('input');
+   const label=el('label',`#${row.seq} · ${row.profile_name} ← ${row.filename}`), title=el('input');
    title.value=row.text;title.maxLength=80;label.append(title);$('biliRows').append(label);
   }
   $('biliStatus').textContent='共 '+result.rows.length+' 个视频，请确认标题。';
@@ -682,7 +699,6 @@ $('biliSubmit').onclick=async()=>{
  controls.forEach(e=>e.disabled=true);
  try{
   const result=await api('/api/bili/create',{...input,signature:biliPlan.signature,titles});
-  localStorage.setItem('biliProfile',input.profile);
   biliDialog.close();resetBili();toast(result.message);await refresh();
  }catch(error){$('biliStatus').textContent=error.message}
  finally{controls.forEach(e=>e.disabled=false);$('biliSubmit').disabled=!biliPlan}

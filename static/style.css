@@ -18,3 +18,4 @@ main{margin-left:220px;padding:0 30px 30px;max-width:none}.topbar{height:60px;di
 #batchTemplate,#batchRows textarea{width:100%;padding:8px;border:1px solid #dfe4ed;border-radius:6px;resize:vertical}#batchRows textarea{min-width:190px}#batchRows select{max-width:180px}#batchDraft{margin-right:8px}
 #batchVideoPicker[hidden]{display:none}#batchPastedText{width:100%;padding:8px;border:1px solid #dfe4ed;border-radius:6px}
 #biliRows{max-height:40vh;overflow:auto}#biliRows label{display:grid;gap:4px;margin:10px 0}#biliDialog input,#biliDialog select{padding:8px;min-width:0}#biliDialog .batch-picker input{flex:1}
+#biliProfiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:6px;max-height:180px;overflow:auto;margin-top:8px}

@@ -15,9 +15,13 @@ HOME_URL = 'https://www.bilibili.com/'
 
 
 def plan(body, profiles):
-    profile = next((w for w in profiles if w['id'] == body.get('profile')), None)
-    if not profile:
-        raise ValueError('请选择投稿窗口。')
+    ids = body.get('profiles')
+    if not isinstance(ids, list) or not 1 <= len(ids) <= 200 or any(not isinstance(i, str) for i in ids):
+        raise ValueError('请勾选 1–200 个投稿窗口。')
+    selected = set(ids)
+    targets = sorted((w for w in profiles if w['id'] in selected), key=lambda w: int(w['seq']))
+    if len(selected) != len(ids) or len(targets) != len(ids):
+        raise ValueError('窗口重复或已不存在，请刷新后重新选择。')
     root = Path(body.get('folder') or '')
     if not root.is_absolute() or not root.is_dir():
         raise ValueError('请选择本地视频文件夹。')
@@ -28,13 +32,15 @@ def plan(body, profiles):
                     ('.mp4', '.mov', '.webm')), key=lambda p: (natural_key(p), p.name))
     if not 1 <= len(files) <= 200:
         raise ValueError('请选择含有 1–200 个 MP4、MOV 或 WebM 文件的文件夹。')
+    if len(files) != len(targets):
+        raise ValueError(f'已选 {len(targets)} 个窗口，文件夹有 {len(files)} 个视频。每个窗口需要一个视频，请调整数量。')
     rows = []
-    for path in files:
+    for path, profile in zip(files, targets):
         stat = path.stat()
         if not stat.st_size:
             raise ValueError(f'{path.name} 为空文件。')
         rows.append(dict(video=str(path.resolve()), filename=path.name, text=path.stem[:80],
-                         profile_id=profile['id'], profile_name=profile.get('name') or str(profile['seq']),
+                         seq=profile['seq'], profile_id=profile['id'], profile_name=profile.get('name') or str(profile['seq']),
                          size=stat.st_size, modified=stat.st_mtime_ns, tags=','.join(tags)))
     signature = hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
     return rows, signature
